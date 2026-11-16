@@ -310,8 +310,8 @@ fun ResultCard(card: CardUi, actions: OverlayActions, modifier: Modifier = Modif
                         Text(card.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                     } else if (failed != null) {
                         Column {
-                            Text(stringResource(R.string.math_card_cant_solve), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                            Text(stringResource(R.string.math_card_cant_solve_reason, failed.reason), style = MaterialTheme.typography.bodyMedium)
+                            Text(failed.heading ?: stringResource(R.string.math_card_cant_solve), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                            Text(if (failed.heading != null) failed.reason.replaceFirstChar { it.uppercase() } else stringResource(R.string.math_card_cant_solve_reason, failed.reason), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     val interaction = remember { MutableInteractionSource() }

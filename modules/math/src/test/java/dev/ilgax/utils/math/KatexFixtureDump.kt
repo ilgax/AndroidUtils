@@ -32,6 +32,8 @@ class KatexFixtureDump {
             // 0.6.0: a derivative with its rule steps, and a function alone: f', critical points, sign chart of f', extrema
             "derivative" to content("\\frac{d}{dx}\\left(x^{2}\\sin x\\right)", true),
             "critical" to content("f(x)=x^{3}-3x\\\\f'(x)", false),
+            // 0.7.0: a limit that needs three rounds of L'Hôpital's rule
+            "limit" to content("\\lim_{x\\to0}\\frac{x-\\sin x}{x^{3}}", true),
         )) {
             for ((theme, col) in listOf("light" to light, "dark" to dark)) {
                 File(dir, "$name-$theme.json").writeText(c.toJson(col.first, col.second, col.third))

@@ -26,7 +26,7 @@ object LatexNormalizer {
     private val wrappers = Regex("""(?<!\\)\\[\[\]()]""")
     private val envs = Regex("""\\(?:begin|end)\{(?:array|aligned|align\*?|gathered|gather\*?|matrix|split|cases|eqnarray\*?|equation\*?)\}(?:\{[lcr| ]*\})?""")
     private val textLike = Regex("""\\(mathrm|mathit|mathbf|text|textrm|operatorname)\s*\{([^{}]*)\}""")
-    private val bareFunctions = Regex("""(?<![A-Za-z\\])(ln|log|exp|arcsin|arccos|arctan|sin|cos|tan|cot|sec|csc)(?![A-Za-z])""")
+    private val bareFunctions = Regex("""(?<![A-Za-z\\])(lim|ln|log|exp|arcsin|arccos|arctan|sin|cos|tan|cot|sec|csc)(?![A-Za-z])""")
     private val degreeSigns = Regex("""\^\s*\{\s*\\circ\s*\}|\^\s*\\circ(?![a-zA-Z])|\\degree(?![a-zA-Z])|\\textdegree(?![a-zA-Z])|\\circ(?![a-zA-Z])|º""")
     private val normBars = Regex("""\\(?:lVert|rVert|Vert)(?![a-zA-Z])|\\\|""")
     private val bars = Regex("""\\(?:lvert|rvert|vert|mid)(?![a-zA-Z])""")
@@ -44,6 +44,12 @@ object LatexNormalizer {
     /** `\text{tangent at }`, `\text{tangent line at x=1}`: the words go, a point written inside them stays. */
     private val tangentText = Regex("""\\(?:text|textrm|mathrm|mbox)\s*\{[^{}]*[Tt]angent[^{}]*\}""")
     private val tangentPoint = Regex("""[A-Za-z](?:_\{?0\}?)?\s*=\s*[^{},;]+""")
+
+    /** `\longrightarrow`, `\rightarrow`, `→`, `->`, `\xrightarrow{}` all mean `\to`. */
+    private val arrows = Regex("""\\(?:long)?(?:right|to)arrow(?![a-zA-Z])|\\x(?:long)?rightarrow(?![a-zA-Z])(?:\[[^\]]*\])?|→|⟶|[-−–]\s*>""")
+    private val underLim = Regex("""\\underset\s*\{([^{}]*)\}\s*\{\s*\\?(?:lim|operatorname\{lim\}|mathrm\{lim\})\s*\}""")
+    /** `\lim_x\to 0`, `\lim_x→0^+`: the subscript without braces. */
+    private val bareLimSub = Regex("""\\lim\s*_\s*([A-Za-z])\s*\\to\s*([+-]?\s*(?:\\infty|\d+(?:\.\d+)?|[A-Za-z]))\s*((?:\^\s*\{?\s*[+-]\s*\}?)?)""")
 
     fun normalize(raw: String, dot: DotMeaning = DotMeaning.Multiply, timesIsVariable: Boolean = true): NormalizedInput {
         var s = raw.replace("$", "").replace("\r", "\n")
@@ -65,6 +71,12 @@ object LatexNormalizer {
             if (inner.trim() == "e" && it.groupValues[1] in setOf("mathrm", "operatorname")) "\\mathrm{e}" else inner
         }
         s = bareFunctions.replace(s) { "\\" + it.groupValues[1] }
+        if (s.contains("\\lim")) {
+            s = s.replace(Regex("""\\limits(?![a-zA-Z])"""), " ").replace("∞", "\\infty ")
+            s = underLim.replace(s) { "\\lim_{" + it.groupValues[1] + "}" }
+            s = arrows.replace(s) { "\\to " }
+            s = bareLimSub.replace(s) { "\\lim_{" + it.groupValues[1] + "\\to " + it.groupValues[2].replace(Regex("\\s+"), "") + it.groupValues[3].replace(Regex("\\s+"), "") + "}" }
+        }
         s = degreeSigns.replace(s, "°")
         // vertical bars: every spelling becomes |; double bars (norms) are read as absolute values
         val notes = ArrayList<String>()

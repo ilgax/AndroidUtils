@@ -281,6 +281,12 @@ class ScreenshotTest {
     fun solveCriticalPointsTabletLight() =
         shot("29-solve-critical-points-tablet-light", false, floatingScene("critical-light", minimized = false, input = "f(x)=x^{3}-3x\\\\f'(x)", pageHeight = 1875))
 
+    /** 0.7.0: a limit solved by three rounds of L'Hôpital's rule, each with its derivatives. */
+    @Test
+    @Config(qualifiers = "w1280dp-h1250dp-hdpi")
+    fun solveLimitTabletLight() =
+        shot("30-solve-limit-lhopital-tablet-light", false, floatingScene("limit-light", minimized = false, input = "\\lim_{x\\to0}\\frac{x-\\sin x}{x^{3}}", pageHeight = 1875))
+
     /** KaTeX pre-rendered by headless Chrome from the same page and JSON the card's WebView gets (Robolectric cannot draw a WebView). */
     private fun withKatex(fixture: String, content: @Composable () -> Unit): @Composable () -> Unit = {
         val png = remember(fixture) { BitmapFactory.decodeStream(javaClass.getResourceAsStream("/katex/$fixture.png")!!).asImageBitmap() }

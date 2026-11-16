@@ -405,8 +405,8 @@ private fun TryGroup(state: MathUiState, actions: MathActions) {
                     Modifier,
                 )
                 if (result is SolveResult.Failed) {
-                    Text(stringResource(R.string.math_card_cant_solve), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                    Text(stringResource(R.string.math_card_cant_solve_reason, result.reason), style = MaterialTheme.typography.bodyMedium)
+                    Text(result.heading ?: stringResource(R.string.math_card_cant_solve), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                    Text(if (result.heading != null) result.reason.replaceFirstChar { it.uppercase() } else stringResource(R.string.math_card_cant_solve_reason, result.reason), style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }

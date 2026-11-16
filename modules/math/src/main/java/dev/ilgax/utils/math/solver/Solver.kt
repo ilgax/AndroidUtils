@@ -10,8 +10,9 @@ data class Answer(val latex: String, val plain: String)
 
 sealed interface SolveResult {
     data class Solved(val answers: List<Answer>, val steps: List<Step>, val notes: List<String>) : SolveResult
-    data class Failed(val reason: String) : SolveResult {
-        val title get() = "Can't solve this yet"
+    /** [heading] replaces the usual "Can't solve this yet" (the limit safety check uses it). */
+    data class Failed(val reason: String, val heading: String? = null) : SolveResult {
+        val title get() = heading ?: "Can't solve this yet"
     }
 }
 
@@ -71,6 +72,11 @@ internal class SolveSession(private val target: Char?, private val angles: Angle
     }
 
     private fun runInner(latex: String): SolveResult {
+        if (latex.contains("\\lim")) {
+            return try { LimitSolver(this).solve(latex) } catch (u: LimitUnreliable) {
+                SolveResult.Failed("the numeric check of the answer disagreed (${u.why}), so no answer is shown", "Can't solve this limit reliably")
+            }
+        }
         if (DerivativeSolver.applies(latex)) DerivativeSolver(this, angles).solve(latex)?.let { return it }
         val lines = LatexParser.parse(latex, target, angles)
         val nodes = lines.flatMap { it.parts }
