@@ -21,6 +21,7 @@ class CommandActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WatchUpdater.get(this) // registers the "noticed an offer while the app is closed" hook for this process
         // Exported for the tile host: only a fixed set of commands is accepted, with validated args.
         val cmd = Command.fromId(intent.getIntExtra(EXTRA_CMD, -1))
         if (cmd == null || cmd !in ALLOWED) return finish()

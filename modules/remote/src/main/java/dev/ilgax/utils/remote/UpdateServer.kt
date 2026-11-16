@@ -11,10 +11,27 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+/** Lets exactly one client address download: the first to ask owns the token until it gives up. */
+internal class ClientLock {
+    private var owner: String? = null
+
+    @Synchronized fun admit(ip: String): Boolean {
+        if (owner == null) owner = ip
+        return owner == ip
+    }
+
+    /** The owner's transfer did not finish: another address may take over (a retry after the watch's Wi-Fi changed). */
+    @Synchronized fun release(ip: String) {
+        if (owner == ip) owner = null
+    }
+}
+
 /**
  * One-shot HTTP server for the watch APK. A plain [ServerSocket] on an ephemeral port that answers exactly one
  * request target, [path] (it contains the random token), with the APK; every other request gets 404. It stops
- * itself after the APK was sent completely once, or after [timeoutMs], whichever comes first.
+ * itself after the APK was sent completely once, or after [timeoutMs], whichever comes first. Only the first client address
+ * to ask is served while its transfer is alive; once a client has asked, the deadline is pushed out to at least
+ * [RETRY_GRACE_MS] from then so the watch's retries (backoff, a fresh Wi-Fi request) still find the server.
  */
 class UpdateServer(
     private val path: String,
@@ -34,7 +51,9 @@ class UpdateServer(
     private val finished = AtomicBoolean()
     private val connections = Semaphore(MAX_CONNECTIONS)
     private val active = java.util.Collections.synchronizedSet(HashSet<Socket>())
+    private val lock = ClientLock()
     @Volatile private var socket: ServerSocket? = null
+    @Volatile private var deadline = 0L
 
     /** Bytes of the APK written to clients so far (across attempts). */
     val bytesServed: Long get() = served.get()
@@ -48,14 +67,14 @@ class UpdateServer(
             return -1
         }
         socket = s
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000L
-        Thread({ acceptLoop(s, deadline) }, "watch-update-http").apply { isDaemon = true }.start()
+        deadline = System.nanoTime() + timeoutMs * 1_000_000L
+        Thread({ acceptLoop(s) }, "watch-update-http").apply { isDaemon = true }.start()
         return s.localPort
     }
 
     fun stop() = finish(Reason.STOPPED)
 
-    private fun acceptLoop(s: ServerSocket, deadline: Long) {
+    private fun acceptLoop(s: ServerSocket) {
         s.soTimeout = POLL_MS
         while (!finished.get()) {
             if (System.nanoTime() - deadline >= 0) return finish(Reason.TIMEOUT)
@@ -88,7 +107,8 @@ class UpdateServer(
         c.soTimeout = REQUEST_TIMEOUT_MS
         val target = readRequestTarget(c.getInputStream())
         val out = c.getOutputStream()
-        if (target == null || !constantTimeEquals(target, path) || finished.get()) {
+        val ip = c.inetAddress?.hostAddress ?: ""
+        if (target == null || !constantTimeEquals(target, path) || finished.get() || !lock.admit(ip)) {
             val body = "Not found".toByteArray()
             out.write(
                 ("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n")
@@ -98,6 +118,18 @@ class UpdateServer(
             return
         }
         c.soTimeout = 0
+        val grace = System.nanoTime() + RETRY_GRACE_MS * 1_000_000L
+        if (grace - deadline > 0) deadline = grace
+        var complete = false
+        try {
+            serve(c, out)
+            complete = true
+        } finally {
+            if (!complete) lock.release(ip)
+        }
+    }
+
+    private fun serve(c: Socket, out: java.io.OutputStream) {
         out.write(
             ("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.android.package-archive\r\n" +
                 "Content-Length: $length\r\nConnection: close\r\n\r\n").toByteArray(),
@@ -114,7 +146,7 @@ class UpdateServer(
             }
         }
         out.flush()
-        if (sent != length) return
+        if (sent != length) throw IOException("short")
         // Wait for the client to close, so "completed" means it read everything and not just that we wrote it.
         c.shutdownOutput()
         c.soTimeout = CLOSE_WAIT_MS
@@ -169,6 +201,7 @@ class UpdateServer(
 
     companion object {
         const val DEFAULT_TIMEOUT_MS = 10 * 60 * 1000L
+        const val RETRY_GRACE_MS = 5 * 60 * 1000L
         private const val POLL_MS = 100
         private const val REQUEST_TIMEOUT_MS = 5_000
         private const val CLOSE_WAIT_MS = 3_000

@@ -14,6 +14,8 @@ class UpdateOffer(
     val sha256: ByteArray,
     val ageSec: Int,
     val addresses: List<String>,
+    /** Install even if the watch already runs this version (a "Reinstall" from the tablet). */
+    val force: Boolean = false,
 ) {
     /** The only path the tablet's HTTP server answers. */
     fun path(): String = pathFor(token)
@@ -22,7 +24,10 @@ class UpdateOffer(
 
     override fun equals(other: Any?): Boolean = other is UpdateOffer && versionCode == other.versionCode &&
         port == other.port && token.contentEquals(other.token) && sha256.contentEquals(other.sha256) &&
-        ageSec == other.ageSec && addresses == other.addresses
+        ageSec == other.ageSec && addresses == other.addresses && force == other.force
+
+    /** Identifies this offer's one-shot download; a new offer from the tablet has a new one. */
+    fun key(): String = hex(token)
 
     override fun hashCode(): Int = versionCode * 31 + port
 
@@ -35,7 +40,8 @@ class UpdateOffer(
 /**
  * OFFER characteristic payload:
  * `format(1) | flags(1) | [versionCode(4) | port(2) | ageSec(2) | token(16) | sha256(32) | n(1) | n * ipv4(4)] | tag(32)`.
- * flags bit0 = an offer follows (otherwise "no offer"). tag = HMAC-SHA256(key, "ofr" | nonce | everything before the tag),
+ * flags bit0 = an offer follows (otherwise "no offer"), bit1 = force (install even at the same version), bit2 = the tablet
+ * asks the watch to report its installed binary ([IntegrityFrame]); bit2 may accompany "no offer". tag = HMAC-SHA256(key, "ofr" | nonce | everything before the tag),
  * where nonce is the one the watch used for the GET_OFFER frame that granted this read. Fits one long read (< 512 bytes).
  */
 object OfferFrame {
@@ -51,21 +57,26 @@ object OfferFrame {
     enum class Failure { MALFORMED, AUTH_FAILED }
 
     sealed interface Result {
-        /** [offer] is null for an authenticated "no offer". */
-        class Valid(val offer: UpdateOffer?) : Result
+        /** [offer] is null for an authenticated "no offer". [verifyRequested]: the tablet wants an [IntegrityFrame]. */
+        class Valid(val offer: UpdateOffer?, val verifyRequested: Boolean = false) : Result
         class Invalid(val failure: Failure) : Result
     }
 
-    fun encode(mac: (ByteArray) -> ByteArray, nonce: ByteArray, offer: UpdateOffer?): ByteArray {
+    private const val FLAG_OFFER = 1
+    private const val FLAG_FORCE = 2
+    private const val FLAG_VERIFY = 4
+
+    fun encode(mac: (ByteArray) -> ByteArray, nonce: ByteArray, offer: UpdateOffer?, verifyRequested: Boolean = false): ByteArray {
         require(nonce.size == Protocol.NONCE_SIZE) { "bad nonce" }
+        val verify = if (verifyRequested) FLAG_VERIFY else 0
         val body = if (offer == null) {
-            byteArrayOf(FORMAT.toByte(), 0)
+            byteArrayOf(FORMAT.toByte(), verify.toByte())
         } else {
             require(offer.token.size == TOKEN_SIZE && offer.sha256.size == SHA_SIZE) { "bad token or hash" }
             require(offer.port in 1..0xFFFF && offer.ageSec in 0..0xFFFF && offer.versionCode >= 0) { "bad field" }
             require(offer.addresses.size in 1..MAX_ADDRESSES) { "bad address count" }
             val ips = offer.addresses.map { parseIpv4(it) ?: throw IllegalArgumentException("bad address") }
-            byteArrayOf(FORMAT.toByte(), 1) + u32(offer.versionCode) + u16(offer.port) + u16(offer.ageSec) +
+            byteArrayOf(FORMAT.toByte(), (FLAG_OFFER or verify or (if (offer.force) FLAG_FORCE else 0)).toByte()) + u32(offer.versionCode) + u16(offer.port) + u16(offer.ageSec) +
                 offer.token + offer.sha256 + byteArrayOf(ips.size.toByte()) + ips.fold(ByteArray(0)) { a, b -> a + b }
         }
         return body + tag(mac, nonce, body)
@@ -78,8 +89,10 @@ object OfferFrame {
         val given = payload.copyOfRange(payload.size - TAG_SIZE, payload.size)
         if (!MessageDigest.isEqual(tag(mac, nonce, body), given)) return Result.Invalid(Failure.AUTH_FAILED)
         if (body[0].toInt() != FORMAT) return Result.Invalid(Failure.MALFORMED)
-        val present = (body[1].toInt() and 1) != 0
-        if (!present) return if (body.size == HEADER) Result.Valid(null) else Result.Invalid(Failure.MALFORMED)
+        val flags = body[1].toInt() and 0xFF
+        val present = (flags and FLAG_OFFER) != 0
+        val verifyRequested = (flags and FLAG_VERIFY) != 0
+        if (!present) return if (body.size == HEADER) Result.Valid(null, verifyRequested) else Result.Invalid(Failure.MALFORMED)
         if (body.size < HEADER + FIXED) return Result.Invalid(Failure.MALFORMED)
         var o = HEADER
         val version = readU32(body, o).also { o += 4 }
@@ -92,7 +105,7 @@ object OfferFrame {
             return Result.Invalid(Failure.MALFORMED)
         }
         val ips = List(n) { i -> (0 until 4).joinToString(".") { j -> (body[o + i * 4 + j].toInt() and 0xFF).toString() } }
-        return Result.Valid(UpdateOffer(version, port, token, sha, age, ips))
+        return Result.Valid(UpdateOffer(version, port, token, sha, age, ips, (flags and FLAG_FORCE) != 0), verifyRequested)
     }
 
     /** Strict dotted quad; null for anything else. */
@@ -142,7 +155,9 @@ object UpdateCodec {
 /** Progress the watch reports with UPDATE_STATE: [phase] plus a [value] (percent for DOWNLOADING, [Failure] id for FAILED). */
 class UpdateReport(val phase: Phase, val value: Int) {
     enum class Phase(val id: Int) {
-        DOWNLOADING(1), VERIFYING(2), INSTALLING(3), FAILED(4);
+        DOWNLOADING(1), VERIFYING(2), INSTALLING(3), FAILED(4),
+        /** A download attempt failed and the watch is trying again; the value is the attempt that just failed. */
+        RETRYING(5);
 
         companion object {
             fun fromId(id: Int) = entries.firstOrNull { it.id == id }
@@ -150,7 +165,9 @@ class UpdateReport(val phase: Phase, val value: Int) {
     }
 
     enum class Failure(val id: Int) {
-        UNKNOWN(0), NO_WIFI(1), DOWNLOAD(2), HASH_MISMATCH(3), INSTALL_BLOCKED(4), INSTALL_FAILED(5);
+        UNKNOWN(0), NO_WIFI(1), DOWNLOAD(2), HASH_MISMATCH(3), INSTALL_BLOCKED(4), INSTALL_FAILED(5),
+        /** The downloaded APK is not signed with the key of the installed app; nothing was installed. */
+        CERT_MISMATCH(6);
 
         companion object {
             fun fromId(id: Int) = entries.firstOrNull { it.id == id } ?: UNKNOWN

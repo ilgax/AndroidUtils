@@ -4,8 +4,13 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewConfiguration
@@ -16,6 +21,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.RetryPolicy
 import dev.ilgax.tabremote.protocol.SpeakerOp
 import dev.ilgax.tabremote.protocol.UpdateReport
 
@@ -28,6 +34,9 @@ class MainActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var content: LinearLayout
     private lateinit var statusView: TextView
+    private val ui = Handler(Looper.getMainLooper())
+    private var checkStartedAt = 0L
+    private var lastCheckFailed = false
     private var mode = Mode.LIST
     private var code = ""
     private var statusText = ""
@@ -41,6 +50,7 @@ class MainActivity : Activity() {
         prefs = WatchPrefs(this)
         updater = WatchUpdater.get(this)
         statusText = getString(R.string.status_ready)
+        handleIntent(intent)
 
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll = ScrollView(this).apply {
@@ -65,9 +75,25 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+        checkForUpdate()
+    }
+
+    /** The "update ready" notification starts the update as soon as the offer is read. */
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(UpdateNotifier.EXTRA_START_UPDATE, false) == true) {
+            intent.removeExtra(UpdateNotifier.EXTRA_START_UPDATE)
+            updater.requestStart()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         // Opening the app is the moment the watch tells the tablet its version and picks up an update offer.
+        updater.visible = true
         client.setForeground(true)
         client.onUpdateHint = { checkForUpdate() }
         client.onMacrosHint = { syncMacros() }
@@ -75,14 +101,31 @@ class MainActivity : Activity() {
         checkForUpdate()
         syncMacros()
         querySpeaker()
+        // While visible, also ask for an offer every few seconds: the tablet's ping only reaches a live, subscribed
+        // connection, which is gone after any link drop, and nothing else would re-establish it.
+        ui.removeCallbacks(poll)
+        ui.postDelayed(poll, POLL_MS)
+        if (client.isPaired && hasPermissions()) {
+            updater.verifyIfNewVersion()
+            askNotifications()
+        }
     }
 
     override fun onStop() {
+        ui.removeCallbacks(poll)
+        updater.visible = false
         updater.listener = null
         client.onUpdateHint = null
         client.onMacrosHint = null
         client.setForeground(false)
         super.onStop()
+    }
+
+    private val poll = object : Runnable {
+        override fun run() {
+            if (mode == Mode.LIST) checkForUpdate()
+            ui.postDelayed(this, if (lastCheckFailed) POLL_BACKOFF_MS else POLL_MS)
+        }
     }
 
     override fun onResume() {
@@ -101,6 +144,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         @Suppress("DEPRECATION")
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_BLUETOOTH) return
         val action = pendingAction
         pendingAction = null
         if (hasPermissions()) action?.invoke() else setStatus(getString(R.string.res_no_permission))
@@ -171,6 +215,7 @@ class MainActivity : Activity() {
         renderMacros()
         pill(R.string.btn_sync) { sync() }
         pill(R.string.btn_repair) { beginPairing() }
+        pill(R.string.btn_verify) { verifyApp() }
         versionLabel()
     }
 
@@ -198,8 +243,12 @@ class MainActivity : Activity() {
                 pill(R.string.btn_dismiss) { updater.dismiss() }
             }
             is UpdateUi.Downloading -> info(getString(R.string.update_downloading, u.percent))
+            is UpdateUi.Retrying -> info(getString(R.string.update_retrying, u.attempt, RetryPolicy.MAX_ATTEMPTS))
             is UpdateUi.Installing -> info(getString(R.string.update_installing, u.version))
-            is UpdateUi.Confirm -> info(getString(R.string.update_confirm))
+            is UpdateUi.Confirm -> {
+                info(getString(R.string.update_confirm))
+                info(getString(R.string.update_confirm_note), size = 11f)
+            }
             UpdateUi.NeedsInstallPermission -> {
                 info(getString(R.string.update_allow_installs))
                 info(WatchUpdater.ADB_FIX, size = 11f)
@@ -213,6 +262,7 @@ class MainActivity : Activity() {
                             UpdateReport.Failure.DOWNLOAD -> R.string.update_fail_download
                             UpdateReport.Failure.HASH_MISMATCH -> R.string.update_fail_hash
                             UpdateReport.Failure.INSTALL_FAILED -> R.string.update_fail_install
+                            UpdateReport.Failure.CERT_MISMATCH -> R.string.update_fail_cert
                             else -> R.string.update_fail_unknown
                         },
                     ),
@@ -372,18 +422,50 @@ class MainActivity : Activity() {
     /** HELLO + offer pickup. Silent on any problem: this is background housekeeping, not a user action. */
     private fun checkForUpdate() {
         if (!client.isPaired || !hasPermissions() || updater.isBusy) return
+        val now = SystemClock.elapsedRealtime()
+        if (checkStartedAt != 0L && now - checkStartedAt < CHECK_STUCK_MS) return // one at a time
+        checkStartedAt = now
         client.checkForUpdate(WatchUpdater.versionCode(this)) { check ->
+            checkStartedAt = 0L
             if (isDestroyed) return@checkForUpdate
-            if (check is UpdateCheck.Offer) updater.onOffer(check.offer, auto = true)
+            lastCheckFailed = check is UpdateCheck.Failed
+            updater.handleCheck(check)
         }
     }
 
-    /** The system install dialog must be started from a visible activity. */
+    /** The "Verify watch app" button: hash the installed APK and key, send them to the tablet. */
+    private fun verifyApp() = withPermissions {
+        setStatus(getString(R.string.status_verifying))
+        updater.verifyAndReport { outcome ->
+            if (isDestroyed) return@verifyAndReport
+            setStatus(
+                getString(
+                    when (outcome) {
+                        WatchUpdater.VerifyOutcome.SENT -> R.string.status_verified
+                        WatchUpdater.VerifyOutcome.NOT_SENT -> R.string.status_verify_not_sent
+                        WatchUpdater.VerifyOutcome.TABLET_TOO_OLD -> R.string.res_speaker_unsupported
+                        WatchUpdater.VerifyOutcome.UNREADABLE -> R.string.status_verify_unreadable
+                    },
+                ),
+            )
+        }
+    }
+
+    /** Update notifications need the runtime permission on Wear OS 4+; asked once, after Bluetooth is set up. */
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT < 33 || prefs.askedNotifications) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        prefs.askedNotifications = true
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+    }
+
+    /** The system install dialog must be started from a visible activity; if that fails it becomes a notification. */
     private fun launchPendingConfirm() {
         val intent = updater.takePendingConfirm() ?: return
         try {
             startActivity(intent)
         } catch (e: Exception) {
+            updater.launchFailed(intent)
             setStatus(getString(R.string.update_fail_install))
         }
     }
@@ -402,7 +484,7 @@ class MainActivity : Activity() {
     private fun withPermissions(action: () -> Unit) {
         if (hasPermissions()) return action()
         pendingAction = action
-        requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), 1)
+        requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), REQUEST_BLUETOOTH)
     }
 
     private fun setStatus(text: String) {
@@ -432,7 +514,7 @@ class MainActivity : Activity() {
     private fun versionLabel() {
         val name = packageManager.getPackageInfo(packageName, 0).versionName ?: return
         content.addView(TextView(this).apply {
-            text = getString(R.string.app_version, name)
+            text = getString(R.string.app_version, name) + "\n" + updater.installerInfo()
             textSize = 11f
             gravity = Gravity.CENTER
             setTextColor(0xFF78909C.toInt())
@@ -465,4 +547,14 @@ class MainActivity : Activity() {
     }
 
     // endregion
+
+    private companion object {
+        const val REQUEST_BLUETOOTH = 1
+        const val REQUEST_NOTIFICATIONS = 2
+        /** How often a visible, paired app asks the tablet for an offer. */
+        const val POLL_MS = 5_000L
+        /** After a failed check (tablet out of range, Bluetooth off) a scan every 5 s would only waste battery. */
+        const val POLL_BACKOFF_MS = 15_000L
+        const val CHECK_STUCK_MS = 30_000L
+    }
 }

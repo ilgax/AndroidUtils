@@ -26,6 +26,8 @@ import dev.ilgax.tabremote.protocol.AppSlots
 import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.CommandFrame
 import dev.ilgax.tabremote.protocol.Hmac
+import dev.ilgax.tabremote.protocol.IntegrityFrame
+import dev.ilgax.tabremote.protocol.IntegrityReport
 import dev.ilgax.tabremote.protocol.MacroItem
 import dev.ilgax.tabremote.protocol.MacroList
 import dev.ilgax.tabremote.protocol.Pairing
@@ -41,10 +43,13 @@ import java.security.KeyPair
 
 /** Outcome of [RemoteClient.checkForUpdate]. */
 sealed interface UpdateCheck {
+    /** The tablet asked (authenticated) for an installed-binary report. */
+    val verifyRequested: Boolean get() = false
+
     /** Authenticated offer from the tablet; the user tapped Update there. */
-    class Offer(val offer: UpdateOffer) : UpdateCheck
+    class Offer(val offer: UpdateOffer, override val verifyRequested: Boolean = false) : UpdateCheck
     /** Authenticated "nothing offered". */
-    data object None : UpdateCheck
+    class None(override val verifyRequested: Boolean = false) : UpdateCheck
     /** The tablet app predates the update protocol (no OFFER characteristic, or UNKNOWN_COMMAND). */
     data object Unsupported : UpdateCheck
     class Failed(val result: Result) : UpdateCheck
@@ -98,6 +103,8 @@ class RemoteClient private constructor(context: Context) {
     private var offerCh: BluetoothGattCharacteristic? = null
     /** Optional: absent on tablet apps without macros. */
     private var macrosCh: BluetoothGattCharacteristic? = null
+    /** Optional: absent on tablet apps without the installed-binary check. */
+    private var verifyCh: BluetoothGattCharacteristic? = null
     private var notifying = false
     private var foreground = false
 
@@ -119,6 +126,9 @@ class RemoteClient private constructor(context: Context) {
     /** Called on the main thread when the tablet pings that an update offer is available. */
     @Volatile var onUpdateHint: (() -> Unit)? = null
 
+    /** Called on the main thread after a successful command while the app is not visible (tile, quick launch). */
+    @Volatile var onContact: (() -> Unit)? = null
+
     /** Called on the main thread when the tablet pings that its macro list changed. */
     @Volatile var onMacrosHint: (() -> Unit)? = null
 
@@ -127,7 +137,13 @@ class RemoteClient private constructor(context: Context) {
     val isPaired: Boolean get() = prefs.tabletId != null && vault.has()
 
     fun send(command: Command, args: ByteArray = ByteArray(0), callback: (Result) -> Unit) {
-        enqueue(callback) { signedCommand(command, args) { finish(it) } }
+        enqueue({ r ->
+            callback(r)
+            // Any successful exchange while the app is closed is the moment to look for an update offer.
+            if (r == Result.SUCCESS && !foreground && command != Command.UPDATE_STATE && command != Command.HELLO) {
+                onContact?.invoke()
+            }
+        }) { signedCommand(command, args) { finish(it) } }
     }
 
     /** Sends SYNC_APPS, then reads the slot labels and stores them. */
@@ -182,7 +198,8 @@ class RemoteClient private constructor(context: Context) {
                                     if (st != 0 || value == null) return@op finish(mapStatus(st))
                                     outcome = try {
                                         when (val v = OfferFrame.verify(this@RemoteClient::vaultMac, nonce, value)) {
-                                            is OfferFrame.Result.Valid -> v.offer?.let { UpdateCheck.Offer(it) } ?: UpdateCheck.None
+                                            is OfferFrame.Result.Valid ->
+                                                v.offer?.let { UpdateCheck.Offer(it, v.verifyRequested) } ?: UpdateCheck.None(v.verifyRequested)
                                             is OfferFrame.Result.Invalid -> UpdateCheck.Failed(Result.AUTH_FAILED)
                                         }
                                     } catch (e: Exception) {
@@ -262,6 +279,32 @@ class RemoteClient private constructor(context: Context) {
 
     /** RUN_MACRO: SUCCESS means the tablet accepted and started it; the macro keeps running there. */
     /** SPEAKER; the answer is one of the SPEAKER_* results (or an error), see [Result.speakerOn]. */
+    /**
+     * Sends the installed-binary report to the tablet's VERIFY characteristic, bound to a fresh nonce. UNKNOWN_COMMAND when the
+     * tablet's Utils predates the check; the report is best-effort, the caller decides whether to retry later.
+     */
+    fun reportIntegrity(report: IntegrityReport, callback: (Result) -> Unit) {
+        enqueue(callback) {
+            withConnection(pairing = false) { err ->
+                if (err != null) return@withConnection finish(err)
+                val vCh = verifyCh
+                val nCh = nonceCh
+                if (vCh == null || nCh == null) return@withConnection finish(Result.UNKNOWN_COMMAND)
+                ensureMtu {
+                    op(OP_TIMEOUT_MS, { read(it, nCh) }) { st, nonce ->
+                        if (st != 0 || nonce == null) return@op finish(mapStatus(st))
+                        val frame = try {
+                            IntegrityFrame.encode(this@RemoteClient::vaultMac, nonce, report)
+                        } catch (e: Exception) {
+                            return@op finish(Result.FAILED)
+                        }
+                        op(OP_TIMEOUT_MS, { write(it, vCh, frame) }) { st2, _ -> finish(mapStatus(st2)) }
+                    }
+                }
+            }
+        }
+    }
+
     fun speaker(op: SpeakerOp, callback: (Result) -> Unit) = send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), callback)
 
     fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback)
@@ -719,7 +762,7 @@ class RemoteClient private constructor(context: Context) {
         awaiting = null
         mtuRequested = false
         connectedTabletId = null
-        nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null
+        nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null
         notifying = false
         closeGatt()
     }
@@ -761,6 +804,7 @@ class RemoteClient private constructor(context: Context) {
                 appsCh = svc?.getCharacteristic(Protocol.APPS_UUID)
                 offerCh = svc?.getCharacteristic(Protocol.OFFER_UUID)
                 macrosCh = svc?.getCharacteristic(Protocol.MACROS_UUID)
+                verifyCh = svc?.getCharacteristic(Protocol.VERIFY_UUID)
                 if (nonceCh == null || commandCh == null || pairCh == null || appsCh == null) {
                     return@post connectFinish(Result.CONNECT_FAILED, teardown = true)
                 }

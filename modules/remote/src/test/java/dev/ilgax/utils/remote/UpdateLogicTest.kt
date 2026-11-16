@@ -1,5 +1,6 @@
 package dev.ilgax.utils.remote
 
+import dev.ilgax.tabremote.protocol.IntegrityVerdict
 import dev.ilgax.tabremote.protocol.UpdateReport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,5 +72,54 @@ class UpdateLogicTest {
             R.string.remote_app_st_hash,
             ui(2, WatchUpdateState.Failed(UpdateReport.Failure.HASH_MISMATCH)).statusRes(),
         )
+    }
+
+    @Test fun retryingStateAndFreshToken() {
+        val retry = UpdateReport(UpdateReport.Phase.RETRYING, 2)
+        assertEquals(WatchUpdateState.Retrying(2), UpdateHost.stateOf(snap(report = retry), 0))
+        assertEquals(
+            WatchUpdateState.Retrying(1),
+            UpdateHost.stateOf(snap(ended = UpdateServer.Reason.COMPLETED, report = UpdateReport(UpdateReport.Phase.RETRYING, 1)), 0),
+        )
+        assertEquals(WatchUpdateState.TimedOut, UpdateHost.stateOf(snap(ended = UpdateServer.Reason.TIMEOUT, report = retry), 0))
+        // A finished one-shot server is only replaced when the watch says it is retrying, inside the user's window.
+        assertTrue(UpdateHost.needsFreshToken(UpdateServer.Reason.COMPLETED, retry, 1_000))
+        assertFalse(UpdateHost.needsFreshToken(UpdateServer.Reason.COMPLETED, retry, UpdateServer.DEFAULT_TIMEOUT_MS))
+        assertFalse(UpdateHost.needsFreshToken(null, retry, 0))
+        assertFalse(UpdateHost.needsFreshToken(UpdateServer.Reason.COMPLETED, UpdateReport.failed(UpdateReport.Failure.DOWNLOAD), 0))
+        assertFalse(UpdateHost.needsFreshToken(UpdateServer.Reason.COMPLETED, null, 0))
+    }
+
+    @Test fun updatedToAndReinstall() {
+        fun ui(reported: Int?, updatedTo: Int?, integrity: IntegrityResult? = null, update: WatchUpdateState = WatchUpdateState.Idle) =
+            WatchAppUi("0.4.1", 6, reported, update, integrity, updatedTo)
+        assertTrue(ui(6, 6).justUpdated)
+        assertEquals(R.string.remote_app_st_updated, ui(6, 6).statusRes())
+        assertFalse(ui(6, null).justUpdated)
+        assertFalse(ui(5, 6).justUpdated)
+        assertFalse(ui(6, 6, update = WatchUpdateState.Waiting(5)).justUpdated)
+        assertFalse(ui(6, null, IntegrityResult(IntegrityVerdict.VERIFIED, 6)).canReinstall)
+        for (v in listOf(IntegrityVerdict.CORRUPTED, IntegrityVerdict.DIFFERENT_BUILD, IntegrityVerdict.WRONG_KEY)) {
+            assertTrue(ui(6, null, IntegrityResult(v, 6)).canReinstall)
+        }
+        assertFalse(ui(6, null).canReinstall)
+        assertEquals(R.string.remote_app_integrity_ok, IntegrityVerdict.VERIFIED.statusRes())
+        assertEquals(R.string.remote_app_integrity_corrupted, IntegrityVerdict.CORRUPTED.statusRes())
+        assertEquals(R.string.remote_app_integrity_key, IntegrityVerdict.WRONG_KEY.statusRes())
+        assertEquals(R.string.remote_app_integrity_different, IntegrityVerdict.DIFFERENT_BUILD.statusRes())
+        assertEquals(R.string.remote_app_st_cert, ui(5, null, update = WatchUpdateState.Failed(UpdateReport.Failure.CERT_MISMATCH)).statusRes())
+        assertEquals(R.string.remote_app_st_retrying, ui(5, null, update = WatchUpdateState.Retrying(1)).statusRes())
+        assertTrue(ui(5, null, update = WatchUpdateState.Retrying(1)).active)
+    }
+
+    @Test fun clientLockServesOnlyTheFirstAddressUntilItGivesUp() {
+        val lock = ClientLock()
+        assertTrue(lock.admit("192.168.43.2"))
+        assertTrue(lock.admit("192.168.43.2"))
+        assertFalse(lock.admit("192.168.43.9"))
+        lock.release("192.168.43.9") // not the owner: no effect
+        assertFalse(lock.admit("192.168.43.9"))
+        lock.release("192.168.43.2")
+        assertTrue(lock.admit("192.168.43.9"))
     }
 }

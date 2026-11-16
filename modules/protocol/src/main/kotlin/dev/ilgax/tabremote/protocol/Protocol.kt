@@ -16,6 +16,12 @@ object Protocol {
     /** Readable (long read): one authenticated page of the macro list after SYNC_MACROS. Absent on Utils builds without macros. */
     val MACROS_UUID: UUID = UUID.fromString("e1c2a7d4-5b39-4a86-bd10-72f3c8a94e55")
 
+    /**
+     * Writable: the watch's installed-binary report ([IntegrityFrame]), bound to the nonce read from [NONCE_UUID]. Absent on
+     * Utils builds that predate the check; the watch then skips the report.
+     */
+    val VERIFY_UUID: UUID = UUID.fromString("4a7d93c0-18e5-4b2f-a6c9-0d5e7f31b862")
+
     /** Standard Client Characteristic Configuration descriptor. */
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

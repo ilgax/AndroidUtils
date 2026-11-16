@@ -97,6 +97,9 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
                 WatchAppUi(
                     it.versionName, it.versionCode, updates.watchVersion,
                     UpdateHost.stateOf(updates.snapshot(), System.currentTimeMillis()),
+                    integrity = updates.integrity,
+                    updatedTo = updates.updatedTo,
+                    verifying = updates.verifyRequested,
                 )
             },
             macros = macroData.macros.map { MacroUi(it.id, it.name, it.steps.size, MacroSummary.of(context, engine.registry, it)) },
@@ -106,6 +109,17 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
     }
 
     val scope = rememberCoroutineScope()
+    /** Starts the one-shot server and offers the embedded APK; [force] installs it even at the same version. */
+    val offerWatch = { force: Boolean ->
+        // The offer is only fetched over BLE, so the listener must be running.
+        if (!RemoteService.isRunning()) RemoteControl.setListening(context, true)
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { updates.start(force) }
+            result.messageRes()?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+            tick++
+        }
+        Unit
+    }
     val btPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { tick++ }
     val actions = remember(context) {
         RemoteActions(
@@ -137,14 +151,12 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
             onUnpair = { RemoteControl.unpair(context); tick++ },
             onClearSlot = { prefs.setSlot(it, null); tick++ },
             onPickSlot = { slot, pkg -> prefs.setSlot(slot, pkg); tick++ },
-            onUpdateWatch = {
-                // The offer is only fetched over BLE, so the listener must be running.
+            onUpdateWatch = { offerWatch(false) },
+            onReinstallWatch = { offerWatch(true) },
+            onVerifyWatch = {
                 if (!RemoteService.isRunning()) RemoteControl.setListening(context, true)
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) { updates.start() }
-                    result.messageRes()?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
-                    tick++
-                }
+                updates.requestVerify()
+                tick++
             },
             onCancelUpdate = { updates.stop(); tick++ },
             onAddMacro = { MacroDraft.blank().let { editing = it to it } },

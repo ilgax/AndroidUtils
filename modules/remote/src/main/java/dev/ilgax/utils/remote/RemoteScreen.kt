@@ -40,7 +40,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.IntegrityVerdict
 import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.tabremote.protocol.RetryPolicy
 import dev.ilgax.utils.core.CardMode
 import dev.ilgax.utils.core.R as CoreR
 import dev.ilgax.utils.core.asString
@@ -178,7 +180,8 @@ private fun WatchAppGroup(app: WatchAppUi, paired: Boolean, actions: RemoteActio
     val update = app.update
     val status = when (update) {
         is WatchUpdateState.Downloading -> stringResource(app.statusRes(), update.percent)
-        else -> stringResource(app.statusRes())
+        is WatchUpdateState.Retrying -> stringResource(app.statusRes(), update.attempt, RetryPolicy.MAX_ATTEMPTS)
+        else -> if (app.justUpdated) stringResource(app.statusRes(), app.bundledName) else stringResource(app.statusRes())
     }
     val problem = update is WatchUpdateState.Failed || update is WatchUpdateState.TimedOut
     SettingsGroup(title = stringResource(R.string.remote_group_watch_app)) {
@@ -213,14 +216,41 @@ private fun WatchAppGroup(app: WatchAppUi, paired: Boolean, actions: RemoteActio
                 )
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+        val integrity = app.integrity
+        SettingsRow(
+            label = stringResource(R.string.remote_app_integrity),
+            iconRes = if (integrity == null || integrity.verdict == IntegrityVerdict.VERIFIED) CoreR.drawable.ic_info else CoreR.drawable.ic_warning,
+            iconTint = if (integrity != null && integrity.verdict != IntegrityVerdict.VERIFIED) colors.error else Color.Unspecified,
+        ) {
+            Text(
+                when {
+                    integrity == null -> stringResource(if (app.verifying) R.string.remote_app_integrity_asking else R.string.remote_app_integrity_none)
+                    integrity.verdict == IntegrityVerdict.VERIFIED -> stringResource(integrity.verdict.statusRes(), app.bundledName)
+                    integrity.verdict == IntegrityVerdict.DIFFERENT_BUILD -> stringResource(integrity.verdict.statusRes(), integrity.reportedCode)
+                    else -> stringResource(integrity.verdict.statusRes())
+                },
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        ) {
             if (app.active) {
                 OutlinedButton(onClick = actions.onCancelUpdate) { Text(stringResource(R.string.remote_app_btn_cancel)) }
             } else {
+                OutlinedButton(enabled = paired && !app.verifying, onClick = actions.onVerifyWatch) {
+                    Text(stringResource(R.string.remote_app_btn_verify))
+                }
+                if (app.canReinstall) {
+                    OutlinedButton(enabled = paired, onClick = actions.onReinstallWatch) {
+                        Text(stringResource(R.string.remote_app_btn_reinstall))
+                    }
+                }
                 FilledTonalButton(
                     enabled = paired,
-                    onClick = { if (app.updateAvailable) actions.onUpdateWatch() else confirm = true },
-                ) { Text(stringResource(R.string.remote_app_btn_update)) }
+                    onClick = { if (problem) actions.onUpdateWatch() else if (app.updateAvailable) actions.onUpdateWatch() else confirm = true },
+                ) { Text(stringResource(if (problem) R.string.remote_app_btn_retry else R.string.remote_app_btn_update)) }
             }
         }
     }
@@ -232,7 +262,7 @@ private fun WatchAppGroup(app: WatchAppUi, paired: Boolean, actions: RemoteActio
                 Text(stringResource(if (app.reportedCode == null) R.string.remote_app_confirm_unknown else R.string.remote_app_confirm_current))
             },
             confirmButton = {
-                TextButton(onClick = { confirm = false; actions.onUpdateWatch() }) { Text(stringResource(R.string.remote_app_btn_offer)) }
+                TextButton(onClick = { confirm = false; actions.onReinstallWatch() }) { Text(stringResource(R.string.remote_app_btn_offer)) }
             },
             dismissButton = {
                 TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.remote_btn_cancel)) }

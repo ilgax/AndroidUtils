@@ -51,6 +51,16 @@ class WatchPrefs(context: Context) {
         get() = if (sp.contains(KEY_MACROS_SUPPORTED)) sp.getBoolean(KEY_MACROS_SUPPORTED, false) else null
         set(v) = sp.edit().apply { if (v == null) remove(KEY_MACROS_SUPPORTED) else putBoolean(KEY_MACROS_SUPPORTED, v) }.apply()
 
+    /** versionCode last reported to the tablet with an installed-binary report; -1 = never. */
+    var verifiedVersion: Int
+        get() = sp.getInt(KEY_VERIFIED_VERSION, -1)
+        set(v) = sp.edit().putInt(KEY_VERIFIED_VERSION, v).apply()
+
+    /** The notification permission prompt is shown once; after that the user's answer stands. */
+    var askedNotifications: Boolean
+        get() = sp.getBoolean(KEY_ASKED_NOTIF, false)
+        set(v) = sp.edit().putBoolean(KEY_ASKED_NOTIF, v).apply()
+
     fun clearPairing() = sp.edit().remove(KEY_ID).remove(KEY_SLOTS).remove(KEY_MACROS).remove(KEY_MACRO_VERSION).remove(KEY_MACROS_SUPPORTED).apply()
 
     private companion object {
@@ -60,5 +70,7 @@ class WatchPrefs(context: Context) {
         const val KEY_MACROS = "macros"
         const val KEY_MACRO_VERSION = "macro_version"
         const val KEY_MACROS_SUPPORTED = "macros_supported"
+        const val KEY_VERIFIED_VERSION = "verified_version"
+        const val KEY_ASKED_NOTIF = "asked_notifications"
     }
 }

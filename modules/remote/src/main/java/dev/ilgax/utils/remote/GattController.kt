@@ -17,6 +17,7 @@ import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.CommandFrame
 import dev.ilgax.tabremote.protocol.MacroList
 import dev.ilgax.utils.remote.macros.MacroEngine
+import dev.ilgax.tabremote.protocol.IntegrityFrame
 import dev.ilgax.tabremote.protocol.OfferFrame
 import dev.ilgax.tabremote.protocol.Protocol
 import dev.ilgax.tabremote.protocol.SpeakerCodec
@@ -153,6 +154,9 @@ class GattController(
         svc.addCharacteristic(
             BluetoothGattCharacteristic(Protocol.MACROS_UUID, BluetoothGattCharacteristic.PROPERTY_READ, read),
         )
+        svc.addCharacteristic(
+            BluetoothGattCharacteristic(Protocol.VERIFY_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, write),
+        )
         return svc
     }
 
@@ -274,7 +278,7 @@ class GattController(
                     offerGrants.remove(addr)?.let { nonce ->
                         val mac: (ByteArray) -> ByteArray = { vault.mac(it) ?: throw IllegalStateException("no key") }
                         try {
-                            OfferFrame.encode(mac, nonce, UpdateHost.get(context).currentOffer())
+                            UpdateHost.get(context).let { OfferFrame.encode(mac, nonce, it.currentOffer(), it.verifyRequested) }
                         } catch (e: Exception) {
                             null
                         }
@@ -335,6 +339,14 @@ class GattController(
                 }
                 reply(processCommand(addr, value).code, null)
             }
+            Protocol.VERIFY_UUID -> {
+                // One authenticated write, bound to the nonce like a command; it has to fit one ATT write (needs the MTU).
+                if (prepared || offset != 0) {
+                    reply(Status.FAILED.code, null)
+                    return
+                }
+                reply(processIntegrity(addr, value).code, null)
+            }
             Protocol.PAIR_UUID -> {
                 if (prepared) {
                     val buf = pairBuffers.getOrPut(addr) { ByteArrayOutputStream() }
@@ -373,6 +385,34 @@ class GattController(
                 lockedUntil[addr] = now + LOCKOUT_MS
             } else failures[addr] = n
         } else if (status == Status.SUCCESS || SpeakerCodec.decodeReply(status) != null) {
+            failures.remove(addr)
+        }
+        return status
+    }
+
+    private fun processIntegrity(addr: String, frame: ByteArray): Status {
+        val now = System.currentTimeMillis()
+        if ((lockedUntil[addr] ?: 0L) > now) return Status.RATE_LIMITED
+        val nonce = nonces.getOrPut(addr) { newNonce() }
+        val status = try {
+            if (!vault.has()) {
+                Status.AUTH_FAILED
+            } else {
+                val mac: (ByteArray) -> ByteArray = { vault.mac(it) ?: throw IllegalStateException("no key") }
+                val report = IntegrityFrame.verify(mac, nonce, frame)
+                if (report == null) Status.AUTH_FAILED else { UpdateHost.get(context).onIntegrity(report); Status.SUCCESS }
+            }
+        } catch (e: Exception) {
+            Status.FAILED
+        }
+        nonces[addr] = newNonce() // one nonce per attempt, whatever the outcome
+        if (status == Status.AUTH_FAILED) {
+            val n = (failures[addr] ?: 0) + 1
+            if (n >= MAX_FAILURES) {
+                failures.remove(addr)
+                lockedUntil[addr] = now + LOCKOUT_MS
+            } else failures[addr] = n
+        } else if (status == Status.SUCCESS) {
             failures.remove(addr)
         }
         return status

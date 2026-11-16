@@ -1,6 +1,7 @@
 package dev.ilgax.utils.remote
 
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.IntegrityVerdict
 import dev.ilgax.tabremote.protocol.Status
 import dev.ilgax.utils.remote.macros.MacroUi
 import dev.ilgax.utils.remote.macros.RunRecord
@@ -15,7 +16,18 @@ data class WatchAppUi(
     /** versionCode the watch reported over the authenticated channel; null = never (old watch build). */
     val reportedCode: Int?,
     val update: WatchUpdateState = WatchUpdateState.Idle,
+    /** Last installed-binary verdict; null = no report yet. */
+    val integrity: IntegrityResult? = null,
+    /** versionCode the watch moved to by an update since the last offer, if any. */
+    val updatedTo: Int? = null,
+    /** The tablet asked the watch for a report and none arrived yet. */
+    val verifying: Boolean = false,
 ) {
+    /** Show "Updated to x": the watch reports exactly the version the last update brought, and nothing is running. */
+    val justUpdated: Boolean get() = updatedTo != null && updatedTo == reportedCode && update is WatchUpdateState.Idle
+
+    /** A reinstall is on offer when the installed binary does not match the embedded one. */
+    val canReinstall: Boolean get() = integrity != null && integrity.verdict != IntegrityVerdict.VERIFIED
     /** The bundled build is newer than what the watch runs. A watch that never reported is not known to be older. */
     val updateAvailable: Boolean get() = reportedCode != null && bundledCode > reportedCode
     val upToDate: Boolean get() = reportedCode != null && bundledCode <= reportedCode
@@ -60,6 +72,10 @@ class RemoteActions(
     val runCommand: suspend (Command, ByteArray) -> Status = { _, _ -> Status.SUCCESS },
     val loadApps: suspend () -> List<AppCatalog.App> = { emptyList() },
     val onUpdateWatch: () -> Unit = {},
+    /** Offers the embedded APK again even at the same version ("Reinstall", and "Offer update" in the confirm dialog). */
+    val onReinstallWatch: () -> Unit = {},
+    /** Asks the watch to hash its installed APK and report it. */
+    val onVerifyWatch: () -> Unit = {},
     val onCancelUpdate: () -> Unit = {},
     val onRunMacro: (Int) -> Unit = {},
     val onAddMacro: () -> Unit = {},
@@ -85,12 +101,14 @@ internal fun pairingStep(p: RemoteState.PairingUi, secondsLeft: Int): PairingSte
 /** Status line of the "Watch app" section. */
 internal fun WatchAppUi.statusRes(): Int = when (val u = update) {
     WatchUpdateState.Idle -> when {
+        justUpdated -> R.string.remote_app_st_updated
         updateAvailable -> R.string.remote_app_st_available
         upToDate -> R.string.remote_app_st_current
         else -> R.string.remote_app_st_unknown
     }
     is WatchUpdateState.Waiting -> R.string.remote_app_st_waiting
     is WatchUpdateState.Downloading -> R.string.remote_app_st_downloading
+    is WatchUpdateState.Retrying -> R.string.remote_app_st_retrying
     WatchUpdateState.Installing -> R.string.remote_app_st_installing
     WatchUpdateState.TimedOut -> R.string.remote_app_st_timed_out
     is WatchUpdateState.Failed -> when (u.failure) {
@@ -99,6 +117,15 @@ internal fun WatchAppUi.statusRes(): Int = when (val u = update) {
         dev.ilgax.tabremote.protocol.UpdateReport.Failure.HASH_MISMATCH -> R.string.remote_app_st_hash
         dev.ilgax.tabremote.protocol.UpdateReport.Failure.INSTALL_BLOCKED -> R.string.remote_app_st_blocked
         dev.ilgax.tabremote.protocol.UpdateReport.Failure.INSTALL_FAILED -> R.string.remote_app_st_install_failed
+        dev.ilgax.tabremote.protocol.UpdateReport.Failure.CERT_MISMATCH -> R.string.remote_app_st_cert
         dev.ilgax.tabremote.protocol.UpdateReport.Failure.UNKNOWN -> R.string.remote_app_st_failed
     }
+}
+
+/** Text of the "Integrity" row; the verified text takes the version name, the others the reported build. */
+internal fun IntegrityVerdict.statusRes(): Int = when (this) {
+    IntegrityVerdict.VERIFIED -> R.string.remote_app_integrity_ok
+    IntegrityVerdict.CORRUPTED -> R.string.remote_app_integrity_corrupted
+    IntegrityVerdict.DIFFERENT_BUILD -> R.string.remote_app_integrity_different
+    IntegrityVerdict.WRONG_KEY -> R.string.remote_app_integrity_key
 }

@@ -30,13 +30,26 @@
     <string name="btn_update_to">Update to v%1$d</string>
     <string name="update_downloading">Downloading %1$d%%</string>
     <string name="update_installing">Installing v%1$d…</string>
+    <string name="update_retrying">Download failed, retrying (%1$d of %2$d)…</string>
     <string name="update_confirm">Confirm the install on the next screen</string>
+    <string name="update_confirm_note">This should be the last time it asks. Later updates install without a prompt.</string>
     <string name="update_allow_installs">Allow installs once, then try again:</string>
     <string name="update_fail_no_wifi">Wi-Fi not available. Turn it on and join the tablet\'s network</string>
     <string name="update_fail_download">Couldn\'t reach the tablet over Wi-Fi</string>
     <string name="update_fail_hash">Download didn\'t match, update cancelled</string>
     <string name="update_fail_install">Install failed</string>
+    <string name="update_fail_cert">Update was signed with a different key, cancelled</string>
     <string name="update_fail_unknown">Update failed</string>
+    <string name="btn_verify">Verify watch app</string>
+    <string name="status_verifying">Checking the installed app…</string>
+    <string name="status_verified">Checked, sent to the tablet ✓</string>
+    <string name="status_verify_not_sent">Checked, but the tablet was not reached</string>
+    <string name="status_verify_unreadable">Couldn\'t read the installed app</string>
+    <string name="notif_channel">Updates</string>
+    <string name="notif_update_ready">Tab Remote update ready</string>
+    <string name="notif_update_ready_text">Tap to update from the tablet</string>
+    <string name="notif_confirm">Confirm the Tab Remote install</string>
+    <string name="notif_confirm_text">Tap to continue. This should be the last time.</string>
     <string name="btn_dismiss">Dismiss</string>
 
     <string name="unpaired_info">Not paired yet. Open Tab Remote Receiver on the tablet and tap Pair a watch, then tap Pair here.</string>
