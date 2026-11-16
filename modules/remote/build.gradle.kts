@@ -41,8 +41,8 @@ abstract class BundleWatchApk : DefaultTask() {
 }
 
 val bundleWatchApk = tasks.register<BundleWatchApk>("bundleWatchApk") {
-    dependsOn(":wear:assembleDebug")
-    apkDir.set(project(":wear").layout.buildDirectory.dir("outputs/apk/debug"))
+    dependsOn(":wear:assembleRelease")
+    apkDir.set(project(":wear").layout.buildDirectory.dir("outputs/apk/release"))
     watchKeystore.set(rootProject.layout.projectDirectory.file("keystore/watch-debug.keystore"))
 }
 

@@ -27,8 +27,27 @@ android {
     }
 
     buildTypes {
+        // The build Utils embeds and ships to the watch: R8-shrunk, same key as debug (update continuity).
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+    androidResources {
+        localeFilters += "en"
+    }
+    packaging {
+        // AGP stores dex uncompressed for minSdk >= 28; deflating it makes the APK that Utils pushes over Wi-Fi ~2.5x smaller.
+        dex.useLegacyPackaging = true
+        resources {
+            excludes += setOf(
+                "/META-INF/*.version", "/META-INF/*.kotlin_module", "/META-INF/androidx/**", "/META-INF/com/android/build/gradle/**",
+                "/META-INF/{AL2.0,LGPL2.1}", "/META-INF/LICENSE*", "/META-INF/NOTICE*", "/DebugProbesKt.bin", "/kotlin/**.kotlin_builtins",
+                "/kotlin-tooling-metadata.json",
+            )
         }
     }
     compileOptions {
