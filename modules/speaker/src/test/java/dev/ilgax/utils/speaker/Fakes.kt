@@ -54,6 +54,7 @@ internal class FakeOps(var packages: Map<Int, List<String>> = emptyMap()) : AppO
     val writes = ArrayList<String>()
     var failSet = false
     override fun packagesForUid(uid: Int) = packages[uid] ?: emptyList()
+    override fun uidForPackage(pkg: String) = packages.entries.firstOrNull { pkg in it.value }?.key
     override fun mode(uid: Int, pkg: String) = modes[uid to pkg] ?: 0
     override fun setMode(uid: Int, pkg: String, mode: Int) {
         if (failSet) throw SecurityException("denied")

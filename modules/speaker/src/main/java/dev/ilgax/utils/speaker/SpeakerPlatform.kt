@@ -46,6 +46,9 @@ internal interface VolumeBackend {
 /** The PLAY_AUDIO app op of other apps. Every call may throw. */
 internal interface AppOpsBackend {
     fun packagesForUid(uid: Int): List<String>
+
+    /** The uid of an installed package of the current user, null when it is not installed. */
+    fun uidForPackage(pkg: String): Int?
     fun mode(uid: Int, pkg: String): Int
     fun setMode(uid: Int, pkg: String, mode: Int)
 }

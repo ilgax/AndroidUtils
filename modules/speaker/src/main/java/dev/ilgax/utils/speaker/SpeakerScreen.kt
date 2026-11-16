@@ -1,6 +1,20 @@
 package dev.ilgax.utils.speaker
 
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.produceState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,7 +64,11 @@ data class SpeakerUiState(
     val redirectStatus: String = "",
     val wiredOn: Boolean = false,
     val wiredStatus: String = "",
+    /** The "Mute on speaker" list: package name and label. */
+    val muteList: List<MuteApp> = emptyList(),
 )
+
+data class MuteApp(val packageName: String, val label: String)
 
 data class SpeakerActions(
     val onEnabledChange: (Boolean) -> Unit,
@@ -58,6 +76,9 @@ data class SpeakerActions(
     val onReapply: () -> Unit,
     val onRedirectChange: (Boolean) -> Unit = {},
     val onWiredChange: (Boolean) -> Unit = {},
+    val onMuteAdd: (String) -> Unit = {},
+    val onMuteRemove: (String) -> Unit = {},
+    val loadApps: suspend () -> List<MuteApp> = { emptyList() },
 )
 
 /** Stateful wrapper: wires [SpeakerScreen] to the controller and polls diagnostics while visible. */
@@ -71,6 +92,7 @@ internal fun SpeakerDetail(contentPadding: PaddingValues, modifier: Modifier) {
     var diagnostics by remember { mutableStateOf("") }
     var redirectOn by remember { mutableStateOf(SpeakerExperiments.isRedirectOn(context)) }
     var wiredOn by remember { mutableStateOf(SpeakerExperiments.isWiredOn(context)) }
+    var muteList by remember { mutableStateOf(muteApps(context)) }
     val redirectStatus by SpeakerExperiments.redirectStatus.collectAsStateWithLifecycle()
     val wiredStatus by SpeakerExperiments.wiredStatus.collectAsStateWithLifecycle()
 
@@ -87,12 +109,15 @@ internal fun SpeakerDetail(contentPadding: PaddingValues, modifier: Modifier) {
     }
 
     SpeakerScreen(
-        state = SpeakerUiState(enabled, pause, shizuku, statusLine, diagnostics, redirectOn, redirectStatus, wiredOn, wiredStatus),
+        state = SpeakerUiState(enabled, pause, shizuku, statusLine, diagnostics, redirectOn, redirectStatus, wiredOn, wiredStatus, muteList),
         actions = SpeakerActions(
             onEnabledChange = { SpeakerController.setEnabled(context, it) },
             onPauseChange = { pause = it; SpeakerController.setPauseOnDisconnect(context, it) },
             onRedirectChange = { redirectOn = it; SpeakerExperiments.setRedirect(context, it) },
             onWiredChange = { wiredOn = it; SpeakerExperiments.setWired(context, it) },
+            onMuteAdd = { SpeakerController.setMuteListed(context, it, true); muteList = muteApps(context) },
+            onMuteRemove = { SpeakerController.setMuteListed(context, it, false); muteList = muteApps(context) },
+            loadApps = { withContext(Dispatchers.IO) { launchableApps(context) } },
             onReapply = {
                 SpeakerController.log(context, "manual re-apply")
                 SpeakerController.enforce(context, "manual", true)
@@ -129,6 +154,7 @@ fun SpeakerScreen(
                 iconRes = CoreR.drawable.ic_pause,
             )
         }
+        MuteListGroup(state.muteList, actions)
         SettingsGroup(title = stringResource(R.string.speaker_group_experimental)) {
             SwitchRow(
                 title = stringResource(R.string.speaker_exp_redirect_title),
@@ -174,3 +200,83 @@ fun SpeakerScreen(
 
 /** The toggle's subtitle: what it does, then how it is going (including why it cannot work). */
 internal fun experimentSupporting(summary: String, status: String) = if (status.isBlank()) summary else "$summary\n$status"
+
+private fun muteApps(ctx: Context): List<MuteApp> {
+    val pm = ctx.packageManager
+    return SpeakerController.mutePackages(ctx).map { pkg ->
+        val label = try { pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString() } catch (_: Throwable) { pkg }
+        MuteApp(pkg, label)
+    }
+}
+
+private fun launchableApps(ctx: Context): List<MuteApp> {
+    val pm = ctx.packageManager
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val list = if (Build.VERSION.SDK_INT >= 33) pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
+    else @Suppress("DEPRECATION") pm.queryIntentActivities(intent, 0)
+    return list.map { MuteApp(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
+        .filter { it.packageName != ctx.packageName }
+        .distinctBy { it.packageName }
+        .sortedBy { it.label.lowercase() }
+}
+
+@Composable
+private fun MuteListGroup(apps: List<MuteApp>, actions: SpeakerActions) {
+    var picking by remember { mutableStateOf(false) }
+    Column {
+        SettingsGroup(title = stringResource(R.string.speaker_group_mute_list)) {
+            apps.forEach { app ->
+                SettingsRow(
+                    label = app.label,
+                    value = app.packageName,
+                    trailing = {
+                        TextButton(onClick = { actions.onMuteRemove(app.packageName) }) {
+                            Text(stringResource(R.string.speaker_mute_list_remove))
+                        }
+                    },
+                )
+            }
+            SettingsRow(label = stringResource(R.string.speaker_mute_list_add), value = "", onClick = { picking = true })
+        }
+        Text(
+            stringResource(R.string.speaker_mute_list_summary),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
+    if (picking) {
+        val candidates by produceState<List<MuteApp>?>(null) { value = actions.loadApps() }
+        var query by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { picking = false },
+            title = { Text(stringResource(R.string.speaker_mute_list_pick)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        placeholder = { Text(stringResource(R.string.speaker_mute_list_search)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    val listed = apps.map { it.packageName }.toSet()
+                    val shown = candidates?.filter { it.packageName !in listed && it.label.contains(query.trim(), ignoreCase = true) }
+                    if (shown == null) {
+                        CircularProgressIndicator(Modifier.padding(16.dp))
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                            items(shown, key = { it.packageName }) { app ->
+                                Column(Modifier.fillMaxWidth().clickable { actions.onMuteAdd(app.packageName); picking = false }.padding(vertical = 8.dp)) {
+                                    Text(app.label, style = MaterialTheme.typography.bodyLarge)
+                                    Text(app.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { picking = false }) { Text(stringResource(R.string.speaker_mute_list_close)) } },
+        )
+    }
+}

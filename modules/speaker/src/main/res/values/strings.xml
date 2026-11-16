@@ -22,6 +22,13 @@
     <string name="speaker_pause_title">Pause on disconnect</string>
     <string name="speaker_pause_summary">Pause media when the earbuds drop so nothing plays on the speaker.</string>
 
+    <string name="speaker_group_mute_list">Mute on speaker</string>
+    <string name="speaker_mute_list_summary">These apps are muted the moment the switch turns ON, before any audio plays, and restored on OFF. They stay muted for the whole ON period whatever they are routed to, so they are also silent on your earbuds while the switch is ON. Needs Shizuku.</string>
+    <string name="speaker_mute_list_add">Add app</string>
+    <string name="speaker_mute_list_remove">Remove</string>
+    <string name="speaker_mute_list_pick">Choose an app</string>
+    <string name="speaker_mute_list_search">Search apps</string>
+    <string name="speaker_mute_list_close">Close</string>
     <string name="speaker_group_experimental">Experimental</string>
     <string name="speaker_exp_redirect_title">Experimental: redirect audio into Utils</string>
     <string name="speaker_exp_redirect_summary">Captures audio headed for the speaker into a loopback inside Utils and discards it. Needs Shizuku, and may not work on this build.</string>

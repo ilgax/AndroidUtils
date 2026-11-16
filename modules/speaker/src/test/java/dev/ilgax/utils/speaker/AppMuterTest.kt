@@ -44,13 +44,162 @@ class AppMuterTest {
         assertEquals(4, ops.modes[key(10400, "org.example.b")])
     }
 
-    @Test fun anAppIsRestoredWhenItsPlayersLeaveTheSpeaker() {
-        ops.modes[key(tiktok, "com.zhiliaoapp.musically")] = 0
-        muter.reconcile(setOf(tiktok), ops)
-        val r = muter.reconcile(emptySet(), ops) // the buds took over again
+    private val t0 = 1_000_000L
+    private fun muteTiktok(previous: Int = 0) {
+        ops.modes[key(tiktok, "com.zhiliaoapp.musically")] = previous
+        muter.reconcile(setOf(tiktok), ops, t0)
+    }
+
+    @Test fun anAppStaysMutedWhenItsPlayerPausesStopsOrDisappears() {
+        muteTiktok()
+        // Paused: the player is still there, no longer started.
+        var r = muter.reconcile(emptySet(), ops, t0 + 1000, present = setOf(tiktok))
+        assertTrue(r.restored.isEmpty())
+        // Swiped: not in the started set, nor anywhere else.
+        r = muter.reconcile(emptySet(), ops, t0 + 2000)
+        assertTrue(r.restored.isEmpty())
+        assertEquals(1, ops.modes[key(tiktok, "com.zhiliaoapp.musically")])
+        assertTrue(muter.hasEntries())
+    }
+
+    @Test fun anAppIsRestoredWhenAPlayerOfItIsKnownToBeOnAnotherRoute() {
+        muteTiktok()
+        val r = muter.reconcile(emptySet(), ops, t0 + 1000, offSpeaker = setOf(tiktok), present = setOf(tiktok))
         assertEquals(1, r.restored.size)
         assertEquals(0, ops.modes[key(tiktok, "com.zhiliaoapp.musically")])
         assertFalse(muter.hasEntries())
+    }
+
+    @Test fun aPlayerOnTheSpeakerWinsOverAnotherOneOnTheBuds() {
+        muteTiktok()
+        val r = muter.reconcile(setOf(tiktok), ops, t0 + 1000, offSpeaker = setOf(tiktok), present = setOf(tiktok))
+        assertTrue(r.restored.isEmpty())
+        assertTrue(muter.hasEntries())
+    }
+
+    @Test fun anUnknownRouteDoesNotUnmute() {
+        muteTiktok()
+        val scan = SpeakerScans.scan(listOf(PlayerRoute(tiktok, started = true, onSpeaker = null)), speakerActive = false)
+        assertTrue(scan.offSpeaker.isEmpty())
+        assertEquals(setOf(tiktok), scan.present)
+        val r = muter.reconcile(scan.uids, ops, t0 + 1000, scan.offSpeaker, scan.present)
+        assertTrue(r.restored.isEmpty())
+        assertTrue(muter.hasEntries())
+    }
+
+    @Test fun theScanReportsKnownNonSpeakerRoutesOfStartedAndStoppedPlayers() {
+        val scan = SpeakerScans.scan(
+            listOf(
+                PlayerRoute(10500, started = false, onSpeaker = false),
+                PlayerRoute(10501, started = true, onSpeaker = false),
+                PlayerRoute(10502, started = false, onSpeaker = true),
+                PlayerRoute(-1, started = true, onSpeaker = false),
+            ),
+            speakerActive = true,
+        )
+        assertEquals(setOf(10500, 10501), scan.offSpeaker)
+        assertEquals(setOf(10500, 10501, 10502), scan.present)
+        assertTrue(scan.uids.isEmpty())
+    }
+
+    @Test fun anAppWithNoPlayerForTheGracePeriodIsRestored() {
+        muteTiktok()
+        var r = muter.reconcile(emptySet(), ops, t0 + AppMuter.GRACE_MS - 1)
+        assertTrue(r.restored.isEmpty())
+        r = muter.reconcile(emptySet(), ops, t0 + AppMuter.GRACE_MS + 1)
+        assertEquals(1, r.restored.size)
+        assertFalse(muter.hasEntries())
+    }
+
+    @Test fun anyPlayerOfTheAppRestartsTheGracePeriod() {
+        muteTiktok()
+        val later = t0 + AppMuter.GRACE_MS - 1000
+        muter.reconcile(emptySet(), ops, later, present = setOf(tiktok)) // paused, still there
+        assertEquals(later, muter.entries().single().seen)
+        val r = muter.reconcile(emptySet(), ops, later + AppMuter.GRACE_MS - 1)
+        assertTrue(r.restored.isEmpty())
+    }
+
+    @Test fun theLastSeenTimeIsNotRewrittenOnEveryScan() {
+        muteTiktok()
+        muter.reconcile(setOf(tiktok), ops, t0 + 1000)
+        assertEquals(t0, muter.entries().single().seen)
+        muter.reconcile(setOf(tiktok), ops, t0 + AppMuter.SEEN_WRITE_MS)
+        assertEquals(t0 + AppMuter.SEEN_WRITE_MS, muter.entries().single().seen)
+    }
+
+    @Test fun anOldRecordStillParsesAndStartsItsGracePeriodAtTheFirstScan() {
+        store.putString(AppMuter.K_MUTED, "$tiktok|3|com.zhiliaoapp.musically\n10400|0|org.example.a")
+        assertEquals(AppMuter.Entry(tiktok, "com.zhiliaoapp.musically", 3), muter.entries().first())
+        assertEquals(2, muter.entries().size)
+        ops.modes[key(tiktok, "com.zhiliaoapp.musically")] = 1
+        var r = muter.reconcile(emptySet(), ops, t0)
+        assertTrue(r.restored.isEmpty()) // unknown age: not expired, the clock starts now
+        assertEquals(t0, muter.entries().first().seen)
+        r = muter.reconcile(emptySet(), ops, t0 + AppMuter.GRACE_MS + 1)
+        assertEquals(3, ops.modes[key(tiktok, "com.zhiliaoapp.musically")]) // restored to the recorded previous mode
+    }
+
+    @Test fun theNewRecordFormatRoundTripsAndOldCodeFindsItsFields() {
+        muteTiktok(3)
+        assertEquals("$tiktok|3|com.zhiliaoapp.musically|$t0|0", store.getString(AppMuter.K_MUTED))
+        assertEquals(AppMuter.Entry(tiktok, "com.zhiliaoapp.musically", 3, t0, false), AppMuter(store, own).entries().single())
+    }
+
+    @Test fun listedAppsAreMutedOnAndRestoredOnOffWithoutAnyAudio() {
+        ops.modes[key(tiktok, "com.zhiliaoapp.musically")] = 3
+        val r = muter.reconcile(emptySet(), ops, t0, pinned = setOf("com.zhiliaoapp.musically"))
+        assertEquals(1, r.muted.size)
+        assertTrue(muter.entries().single().pinned)
+        assertEquals(1, ops.modes[key(tiktok, "com.zhiliaoapp.musically")])
+        muter.releaseAll(ops)
+        assertEquals(3, ops.modes[key(tiktok, "com.zhiliaoapp.musically")])
+        assertFalse(muter.hasEntries())
+    }
+
+    @Test fun aListedAppStaysMutedWhateverItsRouteAndHoweverLong() {
+        val pinned = setOf("com.zhiliaoapp.musically")
+        muter.reconcile(emptySet(), ops, t0, pinned = pinned)
+        val r = muter.reconcile(emptySet(), ops, t0 + 3 * AppMuter.GRACE_MS, offSpeaker = setOf(tiktok), present = setOf(tiktok), pinned = pinned)
+        assertTrue(r.restored.isEmpty())
+        assertTrue(muter.hasEntries())
+    }
+
+    @Test fun anAppTakenOffTheListIsRestoredAndOneAddedWhileMutedBecomesListed() {
+        val pkg = "com.zhiliaoapp.musically"
+        muter.reconcile(emptySet(), ops, t0, pinned = setOf(pkg))
+        val r = muter.reconcile(emptySet(), ops, t0 + 1000, pinned = emptySet())
+        assertEquals(1, r.restored.size)
+        assertFalse(muter.hasEntries())
+
+        muteTiktok() // caught on the speaker first, then added to the list
+        muter.reconcile(emptySet(), ops, t0 + AppMuter.GRACE_MS * 2, pinned = setOf(pkg))
+        assertTrue(muter.entries().single().pinned)
+    }
+
+    @Test fun listedAppsFollowTheSameGuarantees() {
+        // Protected packages, an uninstalled app and an op the user already ignored are left alone.
+        ops.modes[key(10400, "org.example.a")] = 1
+        val r = muter.reconcile(
+            emptySet(), ops, t0,
+            pinned = setOf("android", "com.android.systemui", "dev.ilgax.utils", "not.installed", "org.example.a"),
+        )
+        assertTrue(r.muted.isEmpty())
+        assertTrue(ops.writes.isEmpty())
+        assertFalse(muter.hasEntries())
+        // Without Shizuku nothing changes.
+        assertTrue(muter.reconcile(emptySet(), null, t0, pinned = setOf("org.example.b")).muted.isEmpty())
+        assertFalse(muter.hasEntries())
+    }
+
+    @Test fun theMuteListIsStoredAsPackageNames() {
+        val list = MuteList(store)
+        list.add("b.pkg"); list.add("a.pkg"); list.add("b.pkg")
+        assertEquals(listOf("b.pkg", "a.pkg"), MuteList(store).packages().toList())
+        list.remove("b.pkg")
+        list.remove("a.pkg")
+        assertTrue(list.packages().isEmpty())
+        assertEquals(null, store.getString(MuteList.K_MUTE_LIST))
     }
 
     @Test fun everythingIsRestoredWhenTheSwitchGoesOff() {

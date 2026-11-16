@@ -220,6 +220,7 @@ object SpeakerController {
 
     private class SystemAppOps(val h: Hidden, val pm: PackageManager) : AppOpsBackend {
         override fun packagesForUid(uid: Int): List<String> = h.packagesForUid(uid) ?: pm.getPackagesForUid(uid)?.toList() ?: emptyList()
+        override fun uidForPackage(pkg: String): Int? = try { pm.getApplicationInfo(pkg, 0).uid } catch (_: PackageManager.NameNotFoundException) { null }
         override fun mode(uid: Int, pkg: String) = h.opMode(uid, pkg)
         override fun setMode(uid: Int, pkg: String, mode: Int) = h.setOpMode(uid, pkg, mode)
     }
@@ -228,6 +229,15 @@ object SpeakerController {
         SpeakerVolumeKeeper(PrefsStore(prefs(ctx)), SystemVolumes(ctx, am, h), { log(ctx, it) }, { what, t -> error(ctx, what, t) })
 
     private fun muter(ctx: Context) = AppMuter(PrefsStore(prefs(ctx)), Process.myUid(), (hidden?.opCode) ?: AppMuter.OP_PLAY_AUDIO)
+
+    /** The user's "Mute on speaker" list. Changes apply at once while the switch is ON. */
+    fun mutePackages(ctx: Context): Set<String> = MuteList(PrefsStore(prefs(ctx))).packages()
+
+    fun setMuteListed(ctx: Context, pkg: String, listed: Boolean) {
+        val list = MuteList(PrefsStore(prefs(ctx)))
+        if (listed) list.add(pkg) else list.remove(pkg)
+        if (isEnabled(ctx)) rescanPlayers(ctx, "mute list")
+    }
 
     @Volatile private var lastRoutes: List<PlayerRoute> = emptyList()
     @Volatile private var lastScan: SpeakerScan? = null
@@ -326,9 +336,9 @@ object SpeakerController {
         val scan = SpeakerScans.scan(routes, speakerActive)
         lastScan = scan
         val ops = h?.let { SystemAppOps(it, ctx.packageManager) }
-        val res = muter(ctx).reconcile(scan.uids, ops)
-        res.muted.forEach { log(ctx, "muted uid ${it.uid} ${it.pkg} (PLAY_AUDIO was mode ${it.previous})") }
-        res.restored.forEach { log(ctx, "restored uid ${it.uid} ${it.pkg} to mode ${it.previous}: no longer on the speaker") }
+        val res = muter(ctx).reconcile(scan.uids, ops, System.currentTimeMillis(), scan.offSpeaker, scan.present, mutePackages(ctx))
+        res.muted.forEach { log(ctx, "muted uid ${it.uid} ${it.pkg} (PLAY_AUDIO was mode ${it.previous})" + if (it.pinned) " [from the list]" else "") }
+        res.restored.forEach { log(ctx, "restored uid ${it.uid} ${it.pkg} to mode ${it.previous}: its audio is elsewhere, or it was idle too long, or left the list") }
         res.failures.forEach { log(ctx, "ERR $it") }
         if (scan.unknownOwner) {
             // Without Shizuku the owner is always hidden, and with the speaker as the only output the zeroed volume already
@@ -455,8 +465,8 @@ object SpeakerController {
             sb.append("  uid=${if (it.uid < 0) "hidden" else it.uid.toString()} ${if (it.started) "started" else "idle"} on=${when (it.onSpeaker) { true -> "speaker"; false -> "other output"; null -> "unknown" }}\n")
         }
         val muted = muter(app).entries()
-        sb.append("Muted apps (PLAY_AUDIO ignored, previous mode restored when they leave the speaker or on OFF): ${if (muted.isEmpty()) "none" else ""}\n")
-        muted.forEach { sb.append("  uid ${it.uid} ${it.pkg} previous mode ${it.previous}\n") }
+        sb.append("Muted apps (PLAY_AUDIO ignored, previous mode restored on OFF, or when the app plays elsewhere): ${if (muted.isEmpty()) "none" else ""}\n")
+        muted.forEach { sb.append("  uid ${it.uid} ${it.pkg} previous mode ${it.previous}${if (it.pinned) " (from the list)" else ""}\n") }
         lastScan?.let { if (it.unknownOwner) sb.append("  a player on the speaker has a hidden owner (media is paused instead)\n") }
         sb.append(SpeakerExperiments.diagnostics(app))
         h?.let { hh ->
