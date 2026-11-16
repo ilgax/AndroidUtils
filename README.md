@@ -35,7 +35,7 @@ Pure Kotlin, exact big-rational arithmetic; steps are (LaTeX line, short caption
 
 ## Install and first run
 
-1. Install `dist/utils-0.8.4-debug.apk` (arm64 only) (signed with the shared debug key, so later builds update in place).
+1. Install `dist/utils-0.9.0-debug.apk` (arm64 only) (signed with the shared debug key, so later builds update in place).
 2. Start Shizuku (wireless debugging) and open Utils; use the banner to grant Shizuku permission. Allow notifications when asked.
 3. Quick Settings: edit tiles and add **Speaker kill**, **Hotspot** and **Solve**. Long-press the launcher icon for the **Speaker switch** and **Hotspot** shortcuts.
 4. Watch remote: open the module and work through Setup (Bluetooth permissions, notifications, Bluetooth on, accessibility, battery exemption). For a sideloaded app, allow restricted settings first: App info, three-dot menu. Then "Pair a watch", compare the 6-digit code with the watch, confirm on the tablet, then on the watch.
@@ -86,10 +86,10 @@ Not confirmed on any device:
 
 ## Watch app
 
-`wear/` is the Wear OS app "Tab Remote" (`dev.ilgax.utils.wear`): BLE central, app and tile that send signed commands to the Utils tablet side (`modules/remote`, wire format in `modules/protocol`, pure Kotlin/JVM with JUnit tests). Build it with `./gradlew :wear:assembleDebug :wear:lintDebug`; `:remote` bundles the resulting APK, and at the 0.5.0 release a copy for the one-time manual install is added as `dist/utils-wear-0.5.0-debug.apk`. Its debug APK is signed with `keystore/watch-debug.keystore` (certificate SHA-256 `97ce8589...1dbd8`).
+`wear/` is the Wear OS app "Tab Remote" (`dev.ilgax.utils.wear`): BLE central, app and tile that send signed commands to the Utils tablet side (`modules/remote`, wire format in `modules/protocol`, pure Kotlin/JVM with JUnit tests). Build it with `./gradlew :wear:assembleDebug :wear:lintDebug`; `:remote` bundles the resulting APK, and at the 0.5.0 release the release build for the one-time manual install is `dist/utils-wear-0.5.0.apk`. Its debug APK is signed with `keystore/watch-debug.keystore` (certificate SHA-256 `97ce8589...1dbd8`).
 
-**Unreleased, planned for Watch 0.5.0 / Utils 0.9.0 (new package name, clean break).** The watch app is now `dev.ilgax.utils.wear` (was `dev.ilgax.tabremote.wear`); the label stays "Tab Remote". Android treats it as a different app, so it cannot update the old one and has no pairing key. The wire protocol is unchanged (the shared module's package is now `dev.ilgax.utils.protocol`; UUIDs, frames and the HMAC and pairing labels are as before), and so is the signing key. Pairing a new watch replaces the stored pairing on the tablet and forgets the old watch's version, update offer and verify result. **Migrating (once):**
-1. Install the new watch app by hand: `adb install dist/utils-wear-0.5.0-debug.apk` (from the 0.5.0 release on; before that, `wear/build/outputs/apk/debug/wear-debug.apk`), then `adb shell appops set dev.ilgax.utils.wear REQUEST_INSTALL_PACKAGES allow`.
+**Watch 0.5.0 / Utils 0.9.0 (new package name, clean break).** The watch app is now `dev.ilgax.utils.wear` (was `dev.ilgax.tabremote.wear`); the label stays "Tab Remote". Android treats it as a different app, so it cannot update the old one and has no pairing key. The wire protocol is unchanged (the shared module's package is now `dev.ilgax.utils.protocol`; UUIDs, frames and the HMAC and pairing labels are as before), and so is the signing key. Pairing a new watch replaces the stored pairing on the tablet and forgets the old watch's version, update offer and verify result. **Migrating (once):**
+1. Install the new watch app by hand: `adb install dist/utils-wear-0.5.0.apk`, then `adb shell appops set dev.ilgax.utils.wear REQUEST_INSTALL_PACKAGES allow`.
 2. Uninstall the old "Tab Remote" (`dev.ilgax.tabremote.wear`): `adb uninstall dev.ilgax.tabremote.wear`.
 3. Pair again: Utils > Watch remote > Pair a watch, then Pair here on the watch (this replaces the old pairing).
 4. Re-add the Tab Remote tile on the watch.
