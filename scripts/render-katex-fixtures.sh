@@ -4,9 +4,9 @@
 # Usage: scripts/render-katex-fixtures.sh   (after ./gradlew :feature-math:testDebugUnitTest)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-src="$root/feature-math/build/katex-fixtures"
+src="$root/modules/math/build/katex-fixtures"
 out="$root/app/src/test/resources/katex"
-assets="$root/feature-math/src/main/assets/katex"
+assets="$root/modules/math/src/main/assets/katex"
 tmp="$(mktemp -d)"
 mkdir -p "$out"
 for json in "$src"/*.json; do

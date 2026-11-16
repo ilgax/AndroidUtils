@@ -9,7 +9,7 @@ android {
     testOptions.unitTests.isReturnDefaultValues = true
 }
 
-// The watch app, built from ../watch-remote/wear (signed with the key of the APK already on the watch) and
+// The watch app, built from :wear (wear/) (signed with the key of the APK already on the watch) and
 // embedded as an asset so Utils can push it to the watch. No manual copy step: merging assets builds it.
 abstract class BundleWatchApk : DefaultTask() {
     @get:InputDirectory abstract val apkDir: DirectoryProperty

@@ -19,7 +19,7 @@ android {
     // update, and Android only accepts an update signed with the same certificate as the installed app.
     signingConfigs {
         getByName("debug") {
-            storeFile = file("../keystore/debug.keystore")
+            storeFile = rootProject.file("keystore/watch-debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
