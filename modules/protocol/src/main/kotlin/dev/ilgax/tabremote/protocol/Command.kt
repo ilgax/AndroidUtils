@@ -25,7 +25,12 @@ enum class Command(val id: Int) {
      */
     RUN_MACRO(13),
     /** 2 arg bytes: page index, big-endian ([MacroList.encodePage]). Grants one authenticated read of the MACROS characteristic. */
-    SYNC_MACROS(14);
+    SYNC_MACROS(14),
+    /**
+     * One arg byte: a [SpeakerOp] (0 query, 1 on, 2 off, 3 toggle). Answers with the resulting kill-switch state in the
+     * response status ([SpeakerCodec.reply]); a tablet that predates this command answers [Status.UNKNOWN_COMMAND].
+     */
+    SPEAKER(15);
 
     companion object {
         fun fromId(id: Int): Command? = entries.firstOrNull { it.id == id }

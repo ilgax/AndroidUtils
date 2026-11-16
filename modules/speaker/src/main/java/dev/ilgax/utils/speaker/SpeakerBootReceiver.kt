@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 class SpeakerBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        SpeakerController.onBoot(context)
         if (!SpeakerController.isEnabled(context)) return
         SpeakerController.log(context, "boot completed, starting service")
         try {

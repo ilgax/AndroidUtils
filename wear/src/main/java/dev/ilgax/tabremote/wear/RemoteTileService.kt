@@ -14,6 +14,7 @@ import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.SpeakerOp
 
 class RemoteTileService : TileService() {
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
@@ -31,6 +32,8 @@ class RemoteTileService : TileService() {
             .addContent(row(R.string.tile_vol_down to Command.VOLUME_DOWN, R.string.tile_vol_up to Command.VOLUME_UP))
             .addContent(spacer(4f))
             .addContent(row(R.string.tile_ring to Command.RING, R.string.tile_close to Command.KILL_APP))
+            .addContent(spacer(4f))
+            .addContent(button(R.string.tile_speaker, Command.SPEAKER, width = 136f, arg = SpeakerOp.TOGGLE.arg))
             .build()
         val tile = TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
@@ -50,16 +53,13 @@ class RemoteTileService : TileService() {
         .addContent(button(b.first, b.second))
         .build()
 
-    private fun button(label: Int, command: Command): LayoutElementBuilders.LayoutElement {
-        val launch = ActionBuilders.LaunchAction.Builder()
-            .setAndroidActivity(
-                ActionBuilders.AndroidActivity.Builder()
-                    .setPackageName(packageName)
-                    .setClassName(CommandActivity::class.java.name)
-                    .addKeyToExtraMapping(CommandActivity.EXTRA_CMD, ActionBuilders.intExtra(command.id))
-                    .build(),
-            )
-            .build()
+    private fun button(label: Int, command: Command, width: Float = 66f, arg: Int? = null): LayoutElementBuilders.LayoutElement {
+        val activity = ActionBuilders.AndroidActivity.Builder()
+            .setPackageName(packageName)
+            .setClassName(CommandActivity::class.java.name)
+            .addKeyToExtraMapping(CommandActivity.EXTRA_CMD, ActionBuilders.intExtra(command.id))
+        if (arg != null) activity.addKeyToExtraMapping(CommandActivity.EXTRA_ARG, ActionBuilders.intExtra(arg))
+        val launch = ActionBuilders.LaunchAction.Builder().setAndroidActivity(activity.build()).build()
         val modifiers = ModifiersBuilders.Modifiers.Builder()
             .setClickable(
                 ModifiersBuilders.Clickable.Builder().setId("cmd_${command.id}").setOnClick(launch).build(),
@@ -72,7 +72,7 @@ class RemoteTileService : TileService() {
             )
             .build()
         return LayoutElementBuilders.Box.Builder()
-            .setWidth(dp(66f))
+            .setWidth(dp(width))
             .setHeight(dp(34f))
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
@@ -95,6 +95,6 @@ class RemoteTileService : TileService() {
         .build()
 
     private companion object {
-        const val RESOURCES_VERSION = "1"
+        const val RESOURCES_VERSION = "2"
     }
 }

@@ -77,6 +77,15 @@
     <string name="res_macro_busy">Busy</string>
     <string name="res_macro_not_found">Macro not found</string>
     <string name="res_macro_started">Started ✓</string>
+    <string name="res_speaker_on">Kill switch ON ✓</string>
+    <string name="res_speaker_off">Kill switch OFF ✓</string>
+    <string name="res_speaker_no_shizuku">Shizuku is not ready on the tablet</string>
+    <string name="res_speaker_unsupported">Update Utils on the tablet</string>
+    <string name="status_speaker_asking">Asking the tablet…</string>
+    <string name="btn_speaker_on">Speaker kill switch: ON</string>
+    <string name="btn_speaker_off">Speaker kill switch: OFF</string>
+    <string name="btn_speaker_unknown">Speaker kill switch</string>
+    <string name="tile_speaker">Speaker kill</string>
     <string name="macros_title">Macros</string>
     <string name="macros_empty">Add macros in Utils on your tablet</string>
 </resources>

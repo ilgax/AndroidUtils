@@ -24,7 +24,12 @@ object ResultText {
             Result.APP_START_FAILED -> R.string.res_app_start_failed
             Result.MACRO_BUSY -> R.string.res_macro_busy
             Result.MACRO_NOT_FOUND -> R.string.res_macro_not_found
-            Result.UNKNOWN_COMMAND, Result.FAILED, Result.UNKNOWN -> R.string.res_failed
+            Result.SPEAKER_ON -> R.string.res_speaker_on
+            Result.SPEAKER_OFF -> R.string.res_speaker_off
+            Result.SPEAKER_ON_NO_SHIZUKU, Result.SPEAKER_OFF_NO_SHIZUKU -> R.string.res_speaker_no_shizuku
+            // A tablet whose Utils predates the SPEAKER command answers UNKNOWN_COMMAND.
+            Result.UNKNOWN_COMMAND -> if (command == Command.SPEAKER) R.string.res_speaker_unsupported else R.string.res_failed
+            Result.FAILED, Result.UNKNOWN -> R.string.res_failed
         }
         return context.getString(res)
     }

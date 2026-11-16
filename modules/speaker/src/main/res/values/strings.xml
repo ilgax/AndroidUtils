@@ -1,6 +1,6 @@
 <resources>
     <string name="speaker_title">Speaker kill switch</string>
-    <string name="speaker_summary">Keeps the built-in speaker silent while Bluetooth earbuds keep working.</string>
+    <string name="speaker_summary">Keeps the built-in speaker silent, alarms included, while Bluetooth earbuds keep working.</string>
     <string name="speaker_tile_label">Speaker kill</string>
     <string name="speaker_shortcut_short">Speaker switch</string>
     <string name="speaker_shortcut_long">Toggle speaker switch</string>
@@ -11,9 +11,9 @@
 
     <string name="speaker_headline_on">Speaker is blocked</string>
     <string name="speaker_headline_off">Speaker switch is off</string>
-    <string name="speaker_supporting_on">Audio routing is steered away from the built-in speaker and its media volume is held at zero.</string>
-    <string name="speaker_supporting_on_volume_only">Only the volume pin is active. Start Shizuku to block the routing too.</string>
-    <string name="speaker_supporting_off">The built-in speaker is free to play. Its previous volume has been restored.</string>
+    <string name="speaker_supporting_on">All speaker sounds, alarms included, are silenced. Routing is steered away from the built-in speaker, every stream is held at zero on it, and any app that still plays through it is muted until it leaves.</string>
+    <string name="speaker_supporting_on_volume_only">Only the volume pins are active: every stream is held at zero on the speaker. Start Shizuku to block the routing and mute apps too.</string>
+    <string name="speaker_supporting_off">The built-in speaker is free to play. Its previous volumes and ringer mode have been restored.</string>
 
     <string name="speaker_toggled_on">Speaker kill switch on</string>
     <string name="speaker_toggled_off">Speaker kill switch off</string>
@@ -21,6 +21,12 @@
     <string name="speaker_group_options">Options</string>
     <string name="speaker_pause_title">Pause on disconnect</string>
     <string name="speaker_pause_summary">Pause media when the earbuds drop so nothing plays on the speaker.</string>
+
+    <string name="speaker_group_experimental">Experimental</string>
+    <string name="speaker_exp_redirect_title">Experimental: redirect audio into Utils</string>
+    <string name="speaker_exp_redirect_summary">Captures audio headed for the speaker into a loopback inside Utils and discards it. Needs Shizuku, and may not work on this build.</string>
+    <string name="speaker_exp_wired_title">Experimental: fake wired headset</string>
+    <string name="speaker_exp_wired_summary">Tells Android a wired headset is plugged in while no other output is connected, so nothing is routed to the speaker. Needs Shizuku, and may not work on this build.</string>
 
     <string name="speaker_group_status">Status</string>
     <string name="speaker_shizuku_label">Shizuku</string>
@@ -31,7 +37,7 @@
     <string name="speaker_shizuku_not_running">Not running</string>
     <string name="speaker_shizuku_permission">Permission needed</string>
 
-    <string name="speaker_footnote">Only media volume is pinned; alarms, ring and calls can still use the speaker. This is a software block, so a Buds disconnect may leak a moment of audio. Restart Shizuku after every reboot; until then only the volume fallback runs.</string>
+    <string name="speaker_footnote">While the switch is ON the speaker emits nothing, alarms included (they are muted until you switch OFF). Streams whose lowest level is above zero are covered by muting the apps that play on the speaker; Android system sounds are only covered by the zeroed volumes. This is a software block, so a Buds disconnect may leak a moment of audio. Restart Shizuku after every reboot; until then only the volume fallback runs.</string>
     <string name="speaker_action_on">Speaker kill switch on</string>
     <string name="speaker_action_off">Speaker kill switch off</string>
     <string name="speaker_action_toggle">Toggle speaker kill switch</string>

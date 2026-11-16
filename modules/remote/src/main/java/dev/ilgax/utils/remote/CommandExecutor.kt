@@ -9,6 +9,14 @@ import android.os.Looper
 import android.view.KeyEvent
 import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.MacroList
+import dev.ilgax.tabremote.protocol.SpeakerCodec
+import dev.ilgax.utils.core.action.ActionFacts
+import dev.ilgax.utils.core.action.ActionRegistry
+import dev.ilgax.utils.core.action.ParamValues
+import dev.ilgax.utils.core.action.StepResult
+import dev.ilgax.utils.core.shizuku.ShizukuState
+import dev.ilgax.utils.core.shizuku.ShizukuStatus
+import kotlinx.coroutines.runBlocking
 import dev.ilgax.utils.remote.macros.MacroEngine
 import dev.ilgax.tabremote.protocol.Status
 import dev.ilgax.tabremote.protocol.UpdateCodec
@@ -31,6 +39,7 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
             Command.RUN_MACRO -> MacroList.decodeId(args)?.let { MacroEngine.get(context).runFromWatch(it) } ?: Status.FAILED
             Command.HELLO -> UpdateCodec.decodeVersion(args)?.let { UpdateHost.get(context).onHello(it); Status.SUCCESS } ?: Status.FAILED
             Command.UPDATE_STATE -> UpdateReport.decode(args)?.let { UpdateHost.get(context).onReport(it); Status.SUCCESS } ?: Status.FAILED
+            Command.SPEAKER -> speaker(args)
             Command.LOCK -> lock()
             Command.PLAY_PAUSE -> playPause()
             Command.VOLUME_UP -> volume(AudioManager.ADJUST_RAISE)
@@ -42,6 +51,23 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
         }
     } catch (e: Exception) {
         Status.FAILED
+    }
+
+    /**
+     * The kill switch lives in another module; it is reached through the action registry ("speaker.on", "speaker.off",
+     * "speaker.toggle") and its state through [ActionFacts], so this module does not know :feature-speaker.
+     */
+    private fun speaker(args: ByteArray): Status {
+        val op = SpeakerCodec.decodeArgs(args) ?: return Status.FAILED
+        return SpeakerRemote.handle(
+            op = op,
+            isOn = { ActionFacts.isTrue(ActionFacts.Fact.SpeakerKillSwitchOn) },
+            shizukuReady = { ShizukuState.current(context) == ShizukuStatus.Ready },
+            run = { id ->
+                val action = ActionRegistry.shared.find(id) ?: return@handle false
+                runBlocking { action.run(context, ParamValues.empty()) } == StepResult.Ok
+            },
+        )
     }
 
     fun stopRing() = main.post { RingPlayer.stop() }

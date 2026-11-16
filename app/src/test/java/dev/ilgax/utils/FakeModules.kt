@@ -80,7 +80,9 @@ object Fixtures {
     val hotspotOpen = hotspotOn.copy(securityType = 0, passphrase = null, hidden = false, ssid = "FreeWifi", clientCount = 0)
     val speakerOn = SpeakerUiState(
         enabled = true, pauseOnDisconnect = true, shizuku = ShizukuStatus.Ready,
-        statusLine = "ON | Shizuku READY | speaker blocked", diagnostics = DIAG_SPEAKER,
+        statusLine = "ON | Shizuku READY | speaker blocked | 1 app(s) muted", diagnostics = DIAG_SPEAKER,
+        redirectOn = false, redirectStatus = "Off", wiredOn = true,
+        wiredStatus = "Waiting · an external output is connected",
     )
     val noop = SpeakerActions({}, {}, {})
 
@@ -185,10 +187,21 @@ Clients: 1
 Wi-Fi: NAVONA 5200 MHz"""
 
     private const val DIAG_SPEAKER = """Android 16 (SDK 36) samsung SM-X516B
-Switch: ON  Shizuku: READY  status: ON | Shizuku READY | speaker blocked
+Switch: ON  Shizuku: READY  status: ON | Shizuku READY | speaker blocked | 1 app(s) muted
 
 Output devices:
   [2] BUILTIN_SPEAKER(2) 'Speaker' addr=''
-  [41] BLUETOOTH_A2DP(8) 'Galaxy Buds' addr='AA:BB'"""
+  [41] BLUETOOTH_A2DP(8) 'Galaxy Buds' addr='AA:BB'
+
+Speaker volumes (speakerActive=false):
+  music         speaker=0 saved=9 target=0
+  notification  speaker=0 saved=7 target=0
+  ring          speaker=0 saved=6 target=0
+  system        speaker=0 saved=5 target=0
+  alarm         speaker=1 saved=8 target=1
+  dtmf          speaker=0 saved=4 target=0
+  accessibility speaker=0 saved=3 target=0
+
+Muted apps: uid 10345 com.zhiliaoapp.musically previous mode 0"""
 }
 

@@ -281,11 +281,11 @@ class ScreenshotTest {
     fun solveCriticalPointsTabletLight() =
         shot("29-solve-critical-points-tablet-light", false, floatingScene("critical-light", minimized = false, input = "f(x)=x^{3}-3x\\\\f'(x)", pageHeight = 1875))
 
-    /** 0.7.0: a limit solved by three rounds of L'Hôpital's rule, each with its derivatives. */
+    /** 0.7.0: a limit solved by three rounds of L'Hôpital's rule, each with its derivatives. The page is bare: the handwriting sample is an unrelated quadratic. */
     @Test
     @Config(qualifiers = "w1280dp-h1250dp-hdpi")
     fun solveLimitTabletLight() =
-        shot("30-solve-limit-lhopital-tablet-light", false, floatingScene("limit-light", minimized = false, input = "\\lim_{x\\to0}\\frac{x-\\sin x}{x^{3}}", pageHeight = 1875))
+        shot("30-solve-limit-lhopital-tablet-light", false, floatingScene("limit-light", minimized = false, input = "\\lim_{x\\to0}\\frac{x-\\sin x}{x^{3}}", pageHeight = 1875, handwriting = false))
 
     /** KaTeX pre-rendered by headless Chrome from the same page and JSON the card's WebView gets (Robolectric cannot draw a WebView). */
     private fun withKatex(fixture: String, content: @Composable () -> Unit): @Composable () -> Unit = {
@@ -296,15 +296,18 @@ class ScreenshotTest {
         )
     }
 
-    /** A fake "Flexcil page": white, with one of the user's handwritten samples on it. */
-    private fun pageBitmap(height: Int = 1200): Bitmap {
+    /**
+     * A fake "Flexcil page": white, with one of the user's handwritten samples on it. The sample is a quadratic, so a card
+     * that solves something else sets [handwriting] to false and gets the bare ruled page instead of a mismatch.
+     */
+    private fun pageBitmap(height: Int = 1200, handwriting: Boolean = true): Bitmap {
         val sample = BitmapFactory.decodeStream(javaClass.getResourceAsStream("/samples/s02.jpg")!!)
         val page = Bitmap.createBitmap(1920, height, Bitmap.Config.ARGB_8888)
         val c = AndroidCanvas(page)
         c.drawColor(android.graphics.Color.WHITE)
         val rule = android.graphics.Paint().apply { color = 0xFFD8DEE8.toInt(); strokeWidth = 2f }
         for (y in 140..height step 70) c.drawLine(0f, y.toFloat(), 1920f, y.toFloat(), rule)
-        c.drawBitmap(sample, null, android.graphics.Rect(200, 330, 200 + 860, 330 + 353), null)
+        if (handwriting) c.drawBitmap(sample, null, android.graphics.Rect(200, 330, 200 + 860, 330 + 353), null)
         return page
     }
 
@@ -328,7 +331,7 @@ class ScreenshotTest {
     }
 
     /** What the user sees after the lasso: the live page, un-dimmed, with the card window on top of it. */
-    private fun floatingScene(fixture: String, minimized: Boolean, input: String = "2x^{2}+144=400", pageHeight: Int = 1200): @Composable () -> Unit = withKatex(fixture) {
+    private fun floatingScene(fixture: String, minimized: Boolean, input: String = "2x^{2}+144=400", pageHeight: Int = 1200, handwriting: Boolean = true): @Composable () -> Unit = withKatex(fixture) {
         val floating = remember {
             FloatingState().apply {
                 anchor = circleAnchor
@@ -344,7 +347,7 @@ class ScreenshotTest {
             }
         }
         Box(Modifier.fillMaxSize()) {
-            Image(pageBitmap(pageHeight).asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
+            Image(pageBitmap(pageHeight, handwriting).asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
             SolveOverlay(OverlayState(), floating, OverlayActions())
         }
     }

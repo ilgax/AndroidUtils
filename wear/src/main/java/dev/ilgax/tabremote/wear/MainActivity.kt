@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.SpeakerOp
 import dev.ilgax.tabremote.protocol.UpdateReport
 
 class MainActivity : Activity() {
@@ -31,6 +32,8 @@ class MainActivity : Activity() {
     private var code = ""
     private var statusText = ""
     private var pendingAction: (() -> Unit)? = null
+    /** Kill switch state last reported by the tablet; null until the first answer (or when the tablet could not tell). */
+    private var speakerOn: Boolean? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +74,7 @@ class MainActivity : Activity() {
         updater.listener = { render(); launchPendingConfirm() }
         checkForUpdate()
         syncMacros()
+        querySpeaker()
     }
 
     override fun onStop() {
@@ -135,6 +139,14 @@ class MainActivity : Activity() {
         pill(R.string.btn_vol_down) { run(Command.VOLUME_DOWN) }
         pill(R.string.btn_ring) { run(Command.RING) }
         pill(R.string.btn_close_app) { run(Command.KILL_APP) }
+        pill(
+            when (speakerOn) {
+                true -> R.string.btn_speaker_on
+                false -> R.string.btn_speaker_off
+                null -> R.string.btn_speaker_unknown
+            },
+            primary = speakerOn == true,
+        ) { speaker(SpeakerOp.TOGGLE) }
 
         val labels = prefs.slotLabels
         if (labels.any { it.isNotEmpty() }) {
@@ -245,6 +257,30 @@ class MainActivity : Activity() {
                 if (r == Result.SUCCESS) Haptics.success(this) else Haptics.failure(this)
             }
         }
+    }
+
+    /** Tap on the kill switch button: asks the tablet to toggle, shows the state it answers with. */
+    private fun speaker(op: SpeakerOp) = withPermissions {
+        setStatus(getString(R.string.status_speaker_asking))
+        client.speaker(op) { r -> onSpeakerResult(r, quiet = false) }
+    }
+
+    /** Silent like [checkForUpdate]: learn the state when the app opens so the button shows ON/OFF. */
+    private fun querySpeaker() {
+        if (!client.isPaired || !hasPermissions()) return
+        client.speaker(SpeakerOp.QUERY) { r -> onSpeakerResult(r, quiet = true) }
+    }
+
+    private fun onSpeakerResult(r: Result, quiet: Boolean) {
+        if (isDestroyed) return
+        val state = r.speakerOn
+        val changed = state != null && state != speakerOn
+        if (state != null) speakerOn = state
+        if (!quiet) {
+            setStatus(ResultText.describe(this, r, Command.SPEAKER))
+            if (r.isOk) Haptics.success(this) else Haptics.failure(this)
+        }
+        if (changed && mode == Mode.LIST) render()
     }
 
     private fun runMacro(id: Int, name: String) = withPermissions {

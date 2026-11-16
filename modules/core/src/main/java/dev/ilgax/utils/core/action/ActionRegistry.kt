@@ -43,7 +43,7 @@ class ActionRegistry(builtIn: List<ActionProvider> = emptyList()) {
 
 /** Facts about other modules' state that a step's warning needs, without the modules knowing each other. */
 object ActionFacts {
-    enum class Fact { HotspotActive }
+    enum class Fact { HotspotActive, SpeakerKillSwitchOn }
 
     private val probes = java.util.concurrent.ConcurrentHashMap<Fact, () -> Boolean>()
 

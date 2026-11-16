@@ -31,6 +31,8 @@ import dev.ilgax.tabremote.protocol.MacroList
 import dev.ilgax.tabremote.protocol.Pairing
 import dev.ilgax.tabremote.protocol.OfferFrame
 import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.tabremote.protocol.SpeakerCodec
+import dev.ilgax.tabremote.protocol.SpeakerOp
 import dev.ilgax.tabremote.protocol.Status
 import dev.ilgax.tabremote.protocol.UpdateCodec
 import dev.ilgax.tabremote.protocol.UpdateOffer
@@ -259,6 +261,9 @@ class RemoteClient private constructor(context: Context) {
     }
 
     /** RUN_MACRO: SUCCESS means the tablet accepted and started it; the macro keeps running there. */
+    /** SPEAKER; the answer is one of the SPEAKER_* results (or an error), see [Result.speakerOn]. */
+    fun speaker(op: SpeakerOp, callback: (Result) -> Unit) = send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), callback)
+
     fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback)
 
     /** Best-effort progress for the tablet's "Watch app" section; failures are ignored. */

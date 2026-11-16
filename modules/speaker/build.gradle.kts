@@ -6,6 +6,11 @@ plugins {
 
 android {
     namespace = "dev.ilgax.utils.speaker"
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+    defaultConfig.consumerProguardFiles("consumer-rules.pro")
     testOptions.unitTests.isReturnDefaultValues = true
 }
 

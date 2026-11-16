@@ -46,12 +46,18 @@ data class SpeakerUiState(
     val shizuku: ShizukuStatus,
     val statusLine: String,
     val diagnostics: String,
+    val redirectOn: Boolean = false,
+    val redirectStatus: String = "",
+    val wiredOn: Boolean = false,
+    val wiredStatus: String = "",
 )
 
 data class SpeakerActions(
     val onEnabledChange: (Boolean) -> Unit,
     val onPauseChange: (Boolean) -> Unit,
     val onReapply: () -> Unit,
+    val onRedirectChange: (Boolean) -> Unit = {},
+    val onWiredChange: (Boolean) -> Unit = {},
 )
 
 /** Stateful wrapper: wires [SpeakerScreen] to the controller and polls diagnostics while visible. */
@@ -63,6 +69,10 @@ internal fun SpeakerDetail(contentPadding: PaddingValues, modifier: Modifier) {
     val shizuku by ShizukuState.status.collectAsStateWithLifecycle()
     var pause by remember { mutableStateOf(SpeakerController.pauseOnDisconnect(context)) }
     var diagnostics by remember { mutableStateOf("") }
+    var redirectOn by remember { mutableStateOf(SpeakerExperiments.isRedirectOn(context)) }
+    var wiredOn by remember { mutableStateOf(SpeakerExperiments.isWiredOn(context)) }
+    val redirectStatus by SpeakerExperiments.redirectStatus.collectAsStateWithLifecycle()
+    val wiredStatus by SpeakerExperiments.wiredStatus.collectAsStateWithLifecycle()
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
@@ -77,10 +87,12 @@ internal fun SpeakerDetail(contentPadding: PaddingValues, modifier: Modifier) {
     }
 
     SpeakerScreen(
-        state = SpeakerUiState(enabled, pause, shizuku, statusLine, diagnostics),
+        state = SpeakerUiState(enabled, pause, shizuku, statusLine, diagnostics, redirectOn, redirectStatus, wiredOn, wiredStatus),
         actions = SpeakerActions(
             onEnabledChange = { SpeakerController.setEnabled(context, it) },
             onPauseChange = { pause = it; SpeakerController.setPauseOnDisconnect(context, it) },
+            onRedirectChange = { redirectOn = it; SpeakerExperiments.setRedirect(context, it) },
+            onWiredChange = { wiredOn = it; SpeakerExperiments.setWired(context, it) },
             onReapply = {
                 SpeakerController.log(context, "manual re-apply")
                 SpeakerController.enforce(context, "manual", true)
@@ -117,6 +129,22 @@ fun SpeakerScreen(
                 iconRes = CoreR.drawable.ic_pause,
             )
         }
+        SettingsGroup(title = stringResource(R.string.speaker_group_experimental)) {
+            SwitchRow(
+                title = stringResource(R.string.speaker_exp_redirect_title),
+                supporting = experimentSupporting(stringResource(R.string.speaker_exp_redirect_summary), state.redirectStatus),
+                checked = state.redirectOn,
+                onCheckedChange = actions.onRedirectChange,
+                iconRes = CoreR.drawable.ic_shield,
+            )
+            SwitchRow(
+                title = stringResource(R.string.speaker_exp_wired_title),
+                supporting = experimentSupporting(stringResource(R.string.speaker_exp_wired_summary), state.wiredStatus),
+                checked = state.wiredOn,
+                onCheckedChange = actions.onWiredChange,
+                iconRes = CoreR.drawable.ic_tune,
+            )
+        }
         SettingsGroup(title = stringResource(R.string.speaker_group_status)) {
             SettingsRow(
                 label = stringResource(R.string.speaker_shizuku_label),
@@ -143,3 +171,6 @@ fun SpeakerScreen(
         )
     }
 }
+
+/** The toggle's subtitle: what it does, then how it is going (including why it cannot work). */
+internal fun experimentSupporting(summary: String, status: String) = if (status.isBlank()) summary else "$summary\n$status"

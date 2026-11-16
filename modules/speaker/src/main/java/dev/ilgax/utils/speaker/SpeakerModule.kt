@@ -47,6 +47,11 @@ class SpeakerModule(context: Context) : UtilModule {
         // Prime the enabled flow from preferences and finish any release that was waiting for Shizuku.
         SpeakerController.isEnabled(app)
         dev.ilgax.utils.core.action.ActionRegistry.shared.register(SpeakerMacroActions)
+        // The watch remote asks for the state through the core fact; it does not know this module.
+        dev.ilgax.utils.core.action.ActionFacts.provide(dev.ilgax.utils.core.action.ActionFacts.Fact.SpeakerKillSwitchOn) {
+            SpeakerController.isEnabled(app)
+        }
+        SpeakerExperiments.primeStatus(app)
         SpeakerController.retryPendingRelease(app)
     }
 

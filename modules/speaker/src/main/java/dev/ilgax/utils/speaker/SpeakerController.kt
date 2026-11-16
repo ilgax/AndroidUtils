@@ -6,22 +6,19 @@ import android.content.SharedPreferences
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.content.pm.PackageManager
 import android.os.Build
-import android.os.IBinder
+import android.os.Process
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
-import org.lsposed.hiddenapibypass.HiddenApiBypass
 import dev.ilgax.utils.core.shizuku.ShizukuState
 import dev.ilgax.utils.core.shizuku.ShizukuStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import rikka.shizuku.ShizukuBinderWrapper
-import rikka.shizuku.SystemServiceHelper
 import java.lang.reflect.InvocationTargetException
-import java.lang.reflect.Method
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
@@ -34,14 +31,11 @@ object SpeakerController {
     private const val PREFS = "speaker_kill_switch"
     const val K_ENABLED = "enabled"
     const val K_PAUSE = "pause_on_disconnect"
-    private const val K_SAVED = "saved_speaker_idx"
     private const val K_LOG = "event_log"
     private const val K_PENDING = "pending_release"
-    private const val SHELL_PKG = "com.android.shell"
     private const val STREAM_MUSIC = AudioManager.STREAM_MUSIC
     private const val TYPE_SPEAKER = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
     private const val TYPE_SPEAKER_SAFE = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE
-    private const val ROLE_OUTPUT = 2 // AudioDeviceAttributes.ROLE_OUTPUT
 
     private val exec = Executors.newSingleThreadExecutor()
     private val logLines = ArrayDeque<String>()
@@ -59,6 +53,7 @@ object SpeakerController {
     @Volatile private var blockStatus: Map<Int, String> = emptyMap()
 
     private var prefsRef: SharedPreferences? = null
+    internal fun prefsOf(ctx: Context): SharedPreferences = prefs(ctx)
     private fun prefs(ctx: Context): SharedPreferences =
         prefsRef ?: ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also {
             prefsRef = it
@@ -96,7 +91,6 @@ object SpeakerController {
     fun isEnabled(ctx: Context) = prefs(ctx).getBoolean(K_ENABLED, false)
     fun pauseOnDisconnect(ctx: Context) = prefs(ctx).getBoolean(K_PAUSE, true)
     fun setPauseOnDisconnect(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(K_PAUSE, v).apply()
-    private fun savedIndex(ctx: Context) = prefs(ctx).getInt(K_SAVED, -1)
 
     fun setEnabled(ctx: Context, on: Boolean) {
         val app = ctx.applicationContext
@@ -127,6 +121,10 @@ object SpeakerController {
     /** Called when the Shizuku binder dies so the wrapped service is rebuilt next time. */
     fun invalidateBinder() { hidden = null }
 
+    internal fun hiddenOrNull(ctx: Context): Hidden? = if (shizukuState(ctx) == ShizukuStatus.Ready) hidden(ctx) else null
+
+    internal fun runOnExec(block: () -> Unit) { exec.execute { try { block() } catch (t: Throwable) { Log.e(TAG, "exec task", t) } } }
+
     private fun hidden(ctx: Context): Hidden? {
         hidden?.let { return it }
         return try {
@@ -138,59 +136,6 @@ object SpeakerController {
             val m = "bind hidden APIs: ${(t as? InvocationTargetException)?.targetException?.message ?: t.message}"
             if (m != hiddenFailure) { hiddenFailure = m; error(ctx, "bind hidden APIs", t) }
             null
-        }
-    }
-
-    /** Reflection bindings + the shell-wrapped IAudioService instance. */
-    private class Hidden {
-        val service: Any
-        private val cAda: Class<*>
-        private val adaCtor: java.lang.reflect.Constructor<*>
-        private val cVi: Class<*>
-        private val viBuilderCtor: java.lang.reflect.Constructor<*>
-        private val bSetIndex: Method
-        private val bBuild: Method
-        private val viGetIndex: Method
-        private val mSetNonDefault: Method
-        private val mRemoveNonDefault: Method
-        private val mGetStrategies: Method
-        private val mSetDevVol: Method
-        private val mGetDevVol: Method
-        private val strategyGetId: Method
-
-        init {
-            HiddenApiBypass.addHiddenApiExemptions("L")
-            val cService = Class.forName("android.media.IAudioService")
-            val cStub = Class.forName("android.media.IAudioService\$Stub")
-            cAda = Class.forName("android.media.AudioDeviceAttributes")
-            adaCtor = cAda.getConstructor(Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
-            cVi = Class.forName("android.media.VolumeInfo")
-            val cViB = Class.forName("android.media.VolumeInfo\$Builder")
-            viBuilderCtor = cViB.getConstructor(Int::class.javaPrimitiveType)
-            bSetIndex = cViB.getMethod("setVolumeIndex", Int::class.javaPrimitiveType)
-            bBuild = cViB.getMethod("build")
-            viGetIndex = cVi.getMethod("getVolumeIndex")
-            val i = Int::class.javaPrimitiveType
-            mSetNonDefault = cService.getMethod("setDeviceAsNonDefaultForStrategy", i, cAda)
-            mRemoveNonDefault = cService.getMethod("removeDeviceAsNonDefaultForStrategy", i, cAda)
-            mGetStrategies = cService.getMethod("getAudioProductStrategies")
-            mSetDevVol = cService.getMethod("setDeviceVolume", cVi, cAda, String::class.java)
-            mGetDevVol = cService.getMethod("getDeviceVolume", cVi, cAda, String::class.java)
-            strategyGetId = Class.forName("android.media.audiopolicy.AudioProductStrategy").getMethod("getId")
-            val binder: IBinder = ShizukuBinderWrapper(SystemServiceHelper.getSystemService("audio"))
-            service = cStub.getMethod("asInterface", IBinder::class.java).invoke(null, binder)!!
-        }
-
-        fun ada(type: Int, address: String): Any = adaCtor.newInstance(ROLE_OUTPUT, type, address)
-        fun strategyIds(): List<Int> =
-            (mGetStrategies.invoke(service) as List<*>).map { strategyGetId.invoke(it) as Int }
-        fun setNonDefault(strategy: Int, ada: Any) = mSetNonDefault.invoke(service, strategy, ada) as Int
-        fun removeNonDefault(strategy: Int, ada: Any) = mRemoveNonDefault.invoke(service, strategy, ada) as Int
-        private fun vi(index: Int): Any = bBuild.invoke(viBuilderCtor.newInstance(STREAM_MUSIC).also { bSetIndex.invoke(it, index) })!!
-        fun setDeviceVolume(ada: Any, index: Int) { mSetDevVol.invoke(service, vi(index), ada, SHELL_PKG) }
-        fun getDeviceVolume(ada: Any): Int {
-            val res = mGetDevVol.invoke(service, vi(0), ada, SHELL_PKG)
-            return viGetIndex.invoke(res) as Int
         }
     }
 
@@ -222,16 +167,71 @@ object SpeakerController {
 
     fun isBluetoothDevice(d: AudioDeviceInfo) = isBluetooth(d.type)
 
-    private fun speakerMusicIndex(ctx: Context, am: AudioManager, h: Hidden?, active: Boolean): Int? {
-        if (h != null) {
-            try {
-                return h.getDeviceVolume(h.ada(TYPE_SPEAKER, speakerDevices(am).firstOrNull { it.type == TYPE_SPEAKER }?.address ?: ""))
-            } catch (t: Throwable) { error(ctx, "getDeviceVolume(speaker)", t) }
+    internal fun isSpeakerType(type: Int) = type == TYPE_SPEAKER || type == TYPE_SPEAKER_SAFE
+
+    private fun externalOutputConnected(ctx: Context, am: AudioManager) = ExperimentPlan.externalOutput(
+        am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type },
+        prefs(ctx).getBoolean(SpeakerExperiments.K_WIRED_LIVE, false),
+    )
+
+    // ---------- backends over the real system ----------
+
+    /** Volumes of the built-in speaker through the hidden audio service when there is one, otherwise the public API. */
+    private class SystemVolumes(val ctx: Context, val am: AudioManager, val h: Hidden?) : VolumeBackend {
+        private fun primary(): Any =
+            h!!.ada(TYPE_SPEAKER, speakerDevices(am).firstOrNull { it.type == TYPE_SPEAKER }?.address ?: "")
+
+        override fun minIndex(stream: Int) = am.getStreamMinVolume(stream)
+        override fun speakerIndex(stream: Int) = h!!.getDeviceVolume(stream, primary())
+        override fun setSpeakerIndex(stream: Int, index: Int) {
+            h!!.setDeviceVolume(stream, primary(), index)
+            // SPEAKER_SAFE, where the device has one, is best effort: the plain speaker is the one that counts.
+            for ((type, addr) in speakerTargets(am)) {
+                if (type == TYPE_SPEAKER) continue
+                try { h.setDeviceVolume(stream, h.ada(type, addr), index) } catch (t: Throwable) {
+                    error(ctx, "setDeviceVolume(type=$type,${SpeakerStreams.name(stream)})", t)
+                }
+            }
         }
-        if (active) return am.getStreamVolume(STREAM_MUSIC)
-        val v = Settings.System.getInt(ctx.contentResolver, "volume_music_speaker", -1)
-        return if (v >= 0) v else null
+
+        override fun routeIndex(stream: Int) = am.getStreamVolume(stream)
+        override fun setRouteIndex(stream: Int, index: Int) = am.setStreamVolume(stream, index, 0)
+        override fun settingsIndex(stream: Int): Int? {
+            val key = when (stream) {
+                AudioManager.STREAM_MUSIC -> "volume_music"
+                AudioManager.STREAM_NOTIFICATION -> "volume_notification"
+                AudioManager.STREAM_RING -> "volume_ring"
+                AudioManager.STREAM_SYSTEM -> "volume_system"
+                AudioManager.STREAM_ALARM -> "volume_alarm"
+                AudioManager.STREAM_DTMF -> "volume_dtmf"
+                AudioManager.STREAM_ACCESSIBILITY -> "volume_accessibility"
+                else -> return null
+            }
+            return Settings.System.getInt(ctx.contentResolver, "${key}_speaker", -1).takeIf { it >= 0 }
+        }
+
+        override var ringerMode: Int
+            get() = am.ringerMode
+            set(v) {
+                if (h != null) { try { h.setRingerMode(v); return } catch (t: Throwable) { error(ctx, "setRingerModeExternal", t) } }
+                am.ringerMode = v
+            }
     }
+
+    private class SystemAppOps(val h: Hidden, val pm: PackageManager) : AppOpsBackend {
+        override fun packagesForUid(uid: Int): List<String> = h.packagesForUid(uid) ?: pm.getPackagesForUid(uid)?.toList() ?: emptyList()
+        override fun mode(uid: Int, pkg: String) = h.opMode(uid, pkg)
+        override fun setMode(uid: Int, pkg: String, mode: Int) = h.setOpMode(uid, pkg, mode)
+    }
+
+    private fun keeper(ctx: Context, am: AudioManager, h: Hidden?) =
+        SpeakerVolumeKeeper(PrefsStore(prefs(ctx)), SystemVolumes(ctx, am, h), { log(ctx, it) }, { what, t -> error(ctx, what, t) })
+
+    private fun muter(ctx: Context) = AppMuter(PrefsStore(prefs(ctx)), Process.myUid(), (hidden?.opCode) ?: AppMuter.OP_PLAY_AUDIO)
+
+    @Volatile private var lastRoutes: List<PlayerRoute> = emptyList()
+    @Volatile private var lastScan: SpeakerScan? = null
+    @Volatile private var lastStreams: List<SpeakerVolumeKeeper.StreamState> = emptyList()
 
     // ---------- enforce / release ----------
 
@@ -241,6 +241,20 @@ object SpeakerController {
         exec.execute {
             try { doEnforce(app, reason, full) } catch (t: Throwable) { error(app, "enforce($reason)", t) }
         }
+    }
+
+    /** The audio system reported a change in who is playing: mute or release apps, without touching volumes. */
+    fun rescanPlayers(ctx: Context, reason: String) {
+        val app = ctx.applicationContext
+        exec.execute {
+            try { doRescan(app, reason) } catch (t: Throwable) { error(app, "rescan($reason)", t) }
+        }
+    }
+
+    /** The service is going away (switch OFF, or killed): let go of the experiments' hard blocks. */
+    fun onServiceDestroyed(ctx: Context) {
+        val app = ctx.applicationContext
+        runOnExec { SpeakerExperiments.disengageAll(app, hiddenOrNull(app)) }
     }
 
     private fun doEnforce(ctx: Context, reason: String, full: Boolean) {
@@ -271,37 +285,66 @@ object SpeakerController {
         }
 
         val active = speakerActive(am)
-        val cur = speakerMusicIndex(ctx, am, h, active)
-        var saved = savedIndex(ctx)
-        if (cur == null) {
-            notes.add("speaker index unknown")
-        } else {
-            if (saved < 0 && cur > 0) {
-                prefs(ctx).edit().putInt(K_SAVED, cur).apply()
-                saved = cur
-                log(ctx, "saved speaker music index $cur")
-            }
-            if (cur != 0) {
-                var done = false
-                if (h != null && !active) {
-                    try {
-                        h.setDeviceVolume(h.ada(TYPE_SPEAKER, speakerDevices(am).firstOrNull { it.type == TYPE_SPEAKER }?.address ?: ""), 0)
-                        done = true
-                    } catch (t: Throwable) { error(ctx, "setDeviceVolume(speaker,0)", t) }
-                }
-                if (active) {
-                    try { am.setStreamVolume(STREAM_MUSIC, 0, 0); done = true } catch (t: Throwable) { error(ctx, "setStreamVolume(0)", t) }
-                }
-                log(ctx, "zeroed speaker music $cur->0 via ${if (active) "setStreamVolume" else "setDeviceVolume"} ok=$done ($reason)")
-                if (!done) notes.add("could not zero speaker (active=$active)")
-            }
-        }
+        val outcome = keeper(ctx, am, h).enforce(active, h != null, reason)
+        lastStreams = outcome.states
+        notes.addAll(outcome.notes)
+
+        val scan = scanPlayers(ctx, am, h, active)
+        reconcileExperiments(ctx, h, am, true, scan)
+        val muted = muter(ctx).entries().size
+        if (muted > 0) notes.add("$muted app(s) muted")
+
         statusLine = "ON | Shizuku ${state.diagName} | speaker " + (if (active) "ACTIVE" else "blocked") +
             (if (notes.isEmpty()) "" else " | " + notes.joinToString("; "))
         SpeakerService.refreshNotification(ctx)
     }
 
+    private fun doRescan(ctx: Context, reason: String) {
+        if (!isEnabled(ctx)) return
+        val am = ctx.getSystemService(AudioManager::class.java)
+        val h = hiddenOrNull(ctx)
+        val scan = scanPlayers(ctx, am, h, speakerActive(am))
+        reconcileExperiments(ctx, h, am, true, scan)
+    }
+
+    private fun reconcileExperiments(ctx: Context, h: Hidden?, am: AudioManager, switchOn: Boolean, scan: SpeakerScan?) {
+        try { SpeakerExperiments.reconcile(ctx, h, am, switchOn, scan?.uids ?: emptySet()) } catch (t: Throwable) { error(ctx, "experiments", t) }
+    }
+
+    /**
+     * Finds the apps that have a started player on a built-in speaker (the full configurations need the shell's
+     * MODIFY_AUDIO_ROUTING; without Shizuku the public ones are anonymised) and mutes them, and un-mutes the ones that left.
+     */
+    private fun scanPlayers(ctx: Context, am: AudioManager, h: Hidden?, speakerActive: Boolean): SpeakerScan {
+        val routes = try {
+            if (h != null) h.playbackRoutes(am) else publicRoutes(am)
+        } catch (t: Throwable) {
+            error(ctx, "getActivePlaybackConfigurations", t)
+            publicRoutes(am)
+        }
+        lastRoutes = routes
+        val scan = SpeakerScans.scan(routes, speakerActive)
+        lastScan = scan
+        val ops = h?.let { SystemAppOps(it, ctx.packageManager) }
+        val res = muter(ctx).reconcile(scan.uids, ops)
+        res.muted.forEach { log(ctx, "muted uid ${it.uid} ${it.pkg} (PLAY_AUDIO was mode ${it.previous})") }
+        res.restored.forEach { log(ctx, "restored uid ${it.uid} ${it.pkg} to mode ${it.previous}: no longer on the speaker") }
+        res.failures.forEach { log(ctx, "ERR $it") }
+        if (scan.unknownOwner) {
+            // Without Shizuku the owner is always hidden, and with the speaker as the only output the zeroed volume already
+            // covers it; pausing is only right when Shizuku shows hidden owners, or an app plays on the speaker next to an output.
+            if (h != null || externalOutputConnected(ctx, am)) {
+                log(ctx, "a player on the speaker has a hidden owner; cannot mute it, pausing media instead")
+                pauseMedia(ctx, "unknown app on speaker")
+            }
+        }
+        return scan
+    }
+
+    private fun publicRoutes(am: AudioManager): List<PlayerRoute> = am.activePlaybackConfigurations.map { Hidden.routeOf(it, am) }
+
     private fun doRelease(ctx: Context) {
+        var pending = false
         try {
             val am = ctx.getSystemService(AudioManager::class.java)
             val state = shizukuState(ctx)
@@ -315,39 +358,50 @@ object SpeakerController {
                             error(ctx, "removeDeviceAsNonDefaultForStrategy($s,type=$type)", t)
                         }
                     }
-                    prefs(ctx).edit().remove(K_PENDING).apply()
                     log(ctx, "block removed for ${ids.size} strategies")
-                } catch (t: Throwable) { error(ctx, "release block", t) }
+                } catch (t: Throwable) { pending = true; error(ctx, "release block", t) }
             } else {
-                prefs(ctx).edit().putBoolean(K_PENDING, true).apply()
+                pending = true
                 error(ctx, "release: routing block NOT removed, Shizuku unavailable (${state.diagName}); will retry when Shizuku is ready", null)
             }
             blockStatus = emptyMap()
-            val saved = savedIndex(ctx)
-            if (saved >= 0) {
-                var ok = false
-                try {
-                    if (speakerActive(am)) { am.setStreamVolume(STREAM_MUSIC, saved, 0); ok = true }
-                    else if (h != null) {
-                        h.setDeviceVolume(h.ada(TYPE_SPEAKER, speakerDevices(am).firstOrNull { it.type == TYPE_SPEAKER }?.address ?: ""), saved)
-                        ok = true
-                    }
-                } catch (t: Throwable) { error(ctx, "restore volume", t) }
-                if (ok) { prefs(ctx).edit().remove(K_SAVED).apply(); log(ctx, "restored speaker music index $saved") }
-                else log(ctx, "ERR could not restore index $saved; kept saved value")
+
+            // Apps muted through their PLAY_AUDIO op get their previous mode back.
+            val muter = muter(ctx)
+            val rel = muter.releaseAll(h?.let { SystemAppOps(it, ctx.packageManager) })
+            rel.restored.forEach { log(ctx, "restored uid ${it.uid} ${it.pkg} to mode ${it.previous}") }
+            rel.failures.forEach { log(ctx, "ERR $it") }
+            if (muter.hasEntries()) {
+                pending = true
+                log(ctx, "ERR ${muter.entries().size} muted app(s) NOT restored; will retry when Shizuku is ready")
             }
+            lastScan = null
+
+            // Experiments let go of their hard blocks.
+            SpeakerExperiments.disengageAll(ctx, h)
+            if (SpeakerExperiments.hasPending(ctx)) pending = true
+
+            if (!keeper(ctx, am, h).restore(speakerActive(am), h != null)) pending = true
+            lastStreams = emptyList()
             statusLine = "OFF"
-        } catch (t: Throwable) { error(ctx, "release", t) }
+        } catch (t: Throwable) { pending = true; error(ctx, "release", t) }
+        prefs(ctx).edit().putBoolean(K_PENDING, pending).apply()
         SpeakerService.refreshNotification(ctx)
     }
 
-    /** If an OFF could not remove the routing block, redo the release once Shizuku is ready. */
+    /** If an OFF could not finish (routing block, muted apps, volumes, fake headset), redo the release once Shizuku is ready. */
     fun retryPendingRelease(ctx: Context) {
         val app = ctx.applicationContext
-        if (isEnabled(app) || !prefs(app).getBoolean(K_PENDING, false)) return
+        if (isEnabled(app)) return
+        if (!prefs(app).getBoolean(K_PENDING, false) && !muter(app).hasEntries() && !SpeakerExperiments.hasPending(app)) return
         if (shizukuState(app) != ShizukuStatus.Ready) return
         log(app, "retrying pending release")
         exec.execute { doRelease(app) }
+    }
+
+    /** Boot: the audio server starts clean, so flags describing its previous life are dropped. */
+    fun onBoot(ctx: Context) {
+        SpeakerExperiments.clearStaleAtBoot(ctx.applicationContext)
     }
 
     fun pauseMedia(ctx: Context, why: String) {
@@ -384,10 +438,31 @@ object SpeakerController {
         blockStatus.forEach { (s, v) -> sb.append("  strategy $s: $v\n") }
         val h = if (state == ShizukuStatus.Ready) hidden(app) else null
         val active = speakerActive(am)
-        val cur = try { speakerMusicIndex(app, am, h, active)?.toString() ?: "?" } catch (t: Throwable) { "err ${t.message}" }
-        sb.append("\nSpeaker music index: current=$cur saved=${savedIndex(app).let { if (it < 0) "-" else it.toString() }} speakerActive=$active\n")
+        sb.append("\nSpeaker volumes (speakerActive=$active; target = what is enforced, a minimum above 0 is covered by the app mute):\n")
+        val streams = try { keeper(app, am, h).snapshot(active, h != null) } catch (t: Throwable) { emptyList() }
+        if (streams.isEmpty()) sb.append("  (unavailable)\n")
+        streams.forEach {
+            sb.append("  %-13s speaker=%s saved=%s target=%d\n".format(SpeakerStreams.name(it.stream), it.current?.toString() ?: "?", it.saved?.toString() ?: "-", it.target))
+        }
+        sb.append("  ringer mode now=${am.ringerMode} saved=${prefs(app).getInt(SpeakerVolumeKeeper.K_RINGER, -1).let { if (it < 0) "-" else it.toString() }}\n")
         sb.append("Stream music now: ${am.getStreamVolume(STREAM_MUSIC)}/${am.getStreamMaxVolume(STREAM_MUSIC)}  " +
             "Settings volume_music_speaker=${Settings.System.getInt(app.contentResolver, "volume_music_speaker", -1)}\n")
+
+        sb.append("\nPlayers (started ones routed to a speaker get muted):\n")
+        val routes = lastRoutes
+        if (routes.isEmpty()) sb.append("  (none seen)\n")
+        routes.forEach {
+            sb.append("  uid=${if (it.uid < 0) "hidden" else it.uid.toString()} ${if (it.started) "started" else "idle"} on=${when (it.onSpeaker) { true -> "speaker"; false -> "other output"; null -> "unknown" }}\n")
+        }
+        val muted = muter(app).entries()
+        sb.append("Muted apps (PLAY_AUDIO ignored, previous mode restored when they leave the speaker or on OFF): ${if (muted.isEmpty()) "none" else ""}\n")
+        muted.forEach { sb.append("  uid ${it.uid} ${it.pkg} previous mode ${it.previous}\n") }
+        lastScan?.let { if (it.unknownOwner) sb.append("  a player on the speaker has a hidden owner (media is paused instead)\n") }
+        sb.append(SpeakerExperiments.diagnostics(app))
+        h?.let { hh ->
+            sb.append("\nHidden APIs bound (app op code ${hh.opCode}):\n")
+            hh.signatures.forEach { (k, v) -> sb.append("  $k: $v\n") }
+        }
         sb.append("\nLast errors:\n")
         synchronized(logLines) {
             if (errors.isEmpty()) sb.append("  (none)\n")

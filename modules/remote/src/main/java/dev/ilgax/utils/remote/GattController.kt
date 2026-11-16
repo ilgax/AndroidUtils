@@ -19,6 +19,7 @@ import dev.ilgax.tabremote.protocol.MacroList
 import dev.ilgax.utils.remote.macros.MacroEngine
 import dev.ilgax.tabremote.protocol.OfferFrame
 import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.tabremote.protocol.SpeakerCodec
 import dev.ilgax.tabremote.protocol.Status
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
@@ -371,7 +372,7 @@ class GattController(
                 failures.remove(addr)
                 lockedUntil[addr] = now + LOCKOUT_MS
             } else failures[addr] = n
-        } else if (status == Status.SUCCESS) {
+        } else if (status == Status.SUCCESS || SpeakerCodec.decodeReply(status) != null) {
             failures.remove(addr)
         }
         return status

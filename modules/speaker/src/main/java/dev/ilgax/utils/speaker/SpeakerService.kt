@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -34,6 +35,16 @@ class SpeakerService : Service() {
         if (full) pendingFull = true
         handler.removeCallbacks(debounced)
         handler.postDelayed(debounced, 100)
+    }
+
+    private val rescan = Runnable { SpeakerController.rescanPlayers(this, "playback change") }
+
+    /** Fires when players start, stop or are rerouted (for example Separate app sound moving an app to the speaker). */
+    private val playbackCallback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+            handler.removeCallbacks(rescan)
+            handler.postDelayed(rescan, 150)
+        }
     }
 
     private val volumeReceiver = object : BroadcastReceiver() {
@@ -88,6 +99,7 @@ class SpeakerService : Service() {
         ContextCompat.registerReceiver(this, volumeReceiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"), ContextCompat.RECEIVER_EXPORTED)
         ContextCompat.registerReceiver(this, noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_EXPORTED)
         am.registerAudioDeviceCallback(deviceCallback, handler)
+        am.registerAudioPlaybackCallback(playbackCallback, handler)
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
     }
@@ -107,6 +119,8 @@ class SpeakerService : Service() {
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(noisyReceiver) } catch (_: Throwable) {}
         am.unregisterAudioDeviceCallback(deviceCallback)
+        am.unregisterAudioPlaybackCallback(playbackCallback)
+        SpeakerController.onServiceDestroyed(this)
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
         super.onDestroy()

@@ -12,6 +12,8 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.tabremote.protocol.SpeakerCodec
+import dev.ilgax.tabremote.protocol.SpeakerOp
 
 /** Sends one command immediately and shows a tiny status. Launched by the tile. */
 class CommandActivity : Activity() {
@@ -25,7 +27,14 @@ class CommandActivity : Activity() {
         val slotCommand = cmd == Command.OPEN_APP || cmd == Command.SWITCH_APP
         val arg = intent.getIntExtra(EXTRA_ARG, -1)
         if (slotCommand && arg !in 0 until Protocol.APP_SLOTS) return finish()
-        val args = if (slotCommand) byteArrayOf(arg.toByte()) else ByteArray(0)
+        // SPEAKER takes a SpeakerOp; the tile asks for a toggle. Anything else from outside is dropped.
+        val speakerCommand = cmd == Command.SPEAKER
+        if (speakerCommand && SpeakerOp.fromArg(arg) == null) return finish()
+        val args = when {
+            slotCommand -> byteArrayOf(arg.toByte())
+            speakerCommand -> SpeakerCodec.encodeArgs(SpeakerOp.fromArg(arg)!!)
+            else -> ByteArray(0)
+        }
         val label = if (slotCommand) WatchPrefs(this).slotLabels[arg].ifEmpty { null } else null
 
         val spinner = ProgressBar(this).apply { isIndeterminate = true }
@@ -48,7 +57,7 @@ class CommandActivity : Activity() {
             if (isDestroyed) return@send
             spinner.visibility = android.view.View.GONE
             text.text = ResultText.describe(this, result, cmd, label)
-            if (result == Result.SUCCESS) Haptics.success(this) else Haptics.failure(this)
+            if (result.isOk) Haptics.success(this) else Haptics.failure(this)
             main.postDelayed({ finish() }, 1000)
         }
     }
