@@ -1,7 +1,7 @@
 package dev.ilgax.tabremote.wear
 
-import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -14,18 +14,22 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.pm.PackageManager
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.os.ParcelUuid
 import dev.ilgax.tabremote.protocol.Advertisement
 import dev.ilgax.tabremote.protocol.AppSlots
 import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.CommandFrame
 import dev.ilgax.tabremote.protocol.Hmac
+import dev.ilgax.tabremote.protocol.LinkPolicy
 import dev.ilgax.tabremote.protocol.IntegrityFrame
 import dev.ilgax.tabremote.protocol.IntegrityReport
 import dev.ilgax.tabremote.protocol.MacroItem
@@ -33,6 +37,7 @@ import dev.ilgax.tabremote.protocol.MacroList
 import dev.ilgax.tabremote.protocol.Pairing
 import dev.ilgax.tabremote.protocol.OfferFrame
 import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.tabremote.protocol.ScanPolicy
 import dev.ilgax.tabremote.protocol.SpeakerCodec
 import dev.ilgax.tabremote.protocol.SpeakerOp
 import dev.ilgax.tabremote.protocol.Status
@@ -82,11 +87,12 @@ interface PairingListener {
  */
 class RemoteClient private constructor(context: Context) {
     private val context = context.applicationContext
-    private val prefs = WatchPrefs(this.context)
+    private val prefs = WatchPrefs.get(this.context)
     private val vault = KeyVault()
     private val thread = HandlerThread("tabremote-client").apply { start() }
     private val handler = Handler(thread.looper)
     private val main = Handler(Looper.getMainLooper())
+    private val bluetooth by lazy { this.context.getSystemService(BluetoothManager::class.java) }
 
     private val queue = ArrayDeque<Job>()
     private var current: Job? = null
@@ -106,7 +112,16 @@ class RemoteClient private constructor(context: Context) {
     /** Optional: absent on tablet apps without the installed-binary check. */
     private var verifyCh: BluetoothGattCharacteristic? = null
     private var notifying = false
-    private var foreground = false
+    /** HELLO (the watch's version) is sent once per connection. */
+    private var helloSent = false
+    @Volatile private var foreground = false
+    /** True while a connection with notifications enabled is up: the tablet's pings reach us, so polling can be rare. */
+    @Volatile var isLinked = false
+        private set
+    /** Whether the Keystore holds the key; asked once (a binder call), then remembered. */
+    @Volatile private var keyPresent: Boolean? = null
+    /** The tablet as last seen in a scan: lets the next connect skip scanning while its address is still valid. */
+    private var lastSeen: Seen? = null
 
     private var pendingOp: ((Int, ByteArray?) -> Unit)? = null
     private var connectDone: ((Result?) -> Unit)? = null
@@ -116,12 +131,39 @@ class RemoteClient private constructor(context: Context) {
     private var awaiting: AwaitingConfirm? = null
     private var pairJob: Job? = null
 
-    private class ConnectTarget(val device: BluetoothDevice, val tabletId: ByteArray, var retried: Boolean = false)
+    private class ConnectTarget(
+        val device: BluetoothDevice, val tabletId: ByteArray, val pairing: Boolean,
+        val timeoutMs: Long = CONNECT_TIMEOUT_MS, var retried: Boolean = false,
+    )
+    private class Seen(val device: BluetoothDevice, val tabletId: ByteArray, val at: Long)
     private class AwaitingConfirm(val key: ByteArray, val tabletId: ByteArray, val listener: PairingListener)
 
     private val opTimeout = Runnable { completeOp(STATUS_TIMEOUT, null) }
     private val connectTimeout = Runnable { connectFinish(Result.CONNECT_FAILED, teardown = true) }
-    private val idle = Runnable { if (current == null && queue.isEmpty() && awaiting == null && !foreground) teardown() }
+    private val idle = Runnable {
+        if (!LinkPolicy.keepOpen(foreground, current != null, queue.isNotEmpty(), awaiting != null)) teardown()
+    }
+
+    /** Bluetooth switched off: fail what is running now (a scan would otherwise wait out its timeout), drop the link. */
+    private val bluetoothState = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            val st = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            if (st == BluetoothAdapter.STATE_TURNING_OFF || st == BluetoothAdapter.STATE_OFF) {
+                lastSeen = null
+                val job = current
+                if (job != null) job.fail(Result.BLUETOOTH_OFF, teardown = true) else teardown()
+            }
+        }
+    }
+
+    init {
+        // Runs on the client thread, like everything else here.
+        this.context.registerReceiver(
+            bluetoothState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), null, handler, Context.RECEIVER_NOT_EXPORTED,
+        )
+        // Keystore and preferences are read here, off the main thread, so isPaired is cheap when the UI asks.
+        handler.post { keyPresent(); prefs.tabletId }
+    }
 
     /** Called on the main thread when the tablet pings that an update offer is available. */
     @Volatile var onUpdateHint: (() -> Unit)? = null
@@ -134,16 +176,30 @@ class RemoteClient private constructor(context: Context) {
 
     // region public API
 
-    val isPaired: Boolean get() = prefs.tabletId != null && vault.has()
+    val isPaired: Boolean get() = prefs.tabletId != null && keyPresent()
 
-    fun send(command: Command, args: ByteArray = ByteArray(0), callback: (Result) -> Unit) {
+    private fun keyPresent(): Boolean = keyPresent ?: vault.has().also { keyPresent = it }
+
+    /**
+     * Sends one command. A [background] send (housekeeping such as a state query) waits behind the user's taps, which
+     * jump ahead of every queued background job.
+     */
+    fun send(command: Command, args: ByteArray = ByteArray(0), background: Boolean = false, callback: (Result) -> Unit) {
         enqueue({ r ->
             callback(r)
             // Any successful exchange while the app is closed is the moment to look for an update offer.
             if (r == Result.SUCCESS && !foreground && command != Command.UPDATE_STATE && command != Command.HELLO) {
                 onContact?.invoke()
             }
-        }) { signedCommand(command, args) { finish(it) } }
+        }, background) { signedCommand(command, args) { finish(it) } }
+    }
+
+    /** Opens the connection ahead of the first command (activity opened, tile in view). No-op while busy or connected. */
+    fun warmUp() {
+        handler.post {
+            if (current != null || queue.isNotEmpty() || (ready && gatt != null)) return@post
+            enqueue({ }, background = true) { withConnection(pairing = false) { err -> finish(err ?: Result.SUCCESS) } }
+        }
     }
 
     /** Sends SYNC_APPS, then reads the slot labels and stores them. */
@@ -172,7 +228,7 @@ class RemoteClient private constructor(context: Context) {
      */
     fun checkForUpdate(versionCode: Int, callback: (UpdateCheck) -> Unit) {
         var outcome: UpdateCheck? = null
-        enqueue({ r -> callback(outcome ?: UpdateCheck.Failed(r)) }) {
+        enqueue({ r -> callback(outcome ?: UpdateCheck.Failed(r)) }, background = true) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val oCh = offerCh
@@ -181,12 +237,7 @@ class RemoteClient private constructor(context: Context) {
                     return@withConnection finish(Result.SUCCESS)
                 }
                 ensureMtu {
-                    sendSignedWithNonce(this@RemoteClient::vaultMac, Command.HELLO, UpdateCodec.encodeVersion(versionCode)) { r, _ ->
-                        if (r == Result.UNKNOWN_COMMAND) {
-                            outcome = UpdateCheck.Unsupported
-                            return@sendSignedWithNonce finish(Result.SUCCESS)
-                        }
-                        if (r != Result.SUCCESS) return@sendSignedWithNonce finish(r)
+                    val getOffer = {
                         subscribe(oCh) {
                             sendSignedWithNonce(this@RemoteClient::vaultMac, Command.GET_OFFER, ByteArray(0)) { r2, nonce ->
                                 if (r2 == Result.UNKNOWN_COMMAND) {
@@ -210,6 +261,16 @@ class RemoteClient private constructor(context: Context) {
                             }
                         }
                     }
+                    if (helloSent) return@ensureMtu getOffer()
+                    sendSignedWithNonce(this@RemoteClient::vaultMac, Command.HELLO, UpdateCodec.encodeVersion(versionCode)) { r, _ ->
+                        if (r == Result.UNKNOWN_COMMAND) {
+                            outcome = UpdateCheck.Unsupported
+                            return@sendSignedWithNonce finish(Result.SUCCESS)
+                        }
+                        if (r != Result.SUCCESS) return@sendSignedWithNonce finish(r)
+                        helloSent = true
+                        getOffer()
+                    }
                 }
             }
         }
@@ -221,7 +282,7 @@ class RemoteClient private constructor(context: Context) {
      */
     fun syncMacros(knownVersion: Int?, callback: (MacroSync) -> Unit) {
         var outcome: MacroSync? = null
-        enqueue({ r -> callback(outcome ?: MacroSync.Failed(r)) }) {
+        enqueue({ r -> callback(outcome ?: MacroSync.Failed(r)) }, background = true) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val mCh = macrosCh
@@ -277,14 +338,12 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    /** RUN_MACRO: SUCCESS means the tablet accepted and started it; the macro keeps running there. */
-    /** SPEAKER; the answer is one of the SPEAKER_* results (or an error), see [Result.speakerOn]. */
     /**
      * Sends the installed-binary report to the tablet's VERIFY characteristic, bound to a fresh nonce. UNKNOWN_COMMAND when the
      * tablet's Utils predates the check; the report is best-effort, the caller decides whether to retry later.
      */
     fun reportIntegrity(report: IntegrityReport, callback: (Result) -> Unit) {
-        enqueue(callback) {
+        enqueue(callback, background = true) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val vCh = verifyCh
@@ -305,25 +364,29 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    fun speaker(op: SpeakerOp, callback: (Result) -> Unit) = send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), callback)
+    /** SPEAKER; the answer is one of the SPEAKER_* results (or an error), see [Result.speakerOn]. A QUERY is housekeeping. */
+    fun speaker(op: SpeakerOp, callback: (Result) -> Unit) =
+        send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), background = op == SpeakerOp.QUERY, callback = callback)
 
-    fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback)
+    /** RUN_MACRO: SUCCESS means the tablet accepted and started it; the macro keeps running there. */
+
+    fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback = callback)
 
     /** Best-effort progress for the tablet's "Watch app" section; failures are ignored. */
-    fun reportUpdate(report: UpdateReport) = send(Command.UPDATE_STATE, report.encode()) { }
+    fun reportUpdate(report: UpdateReport) = send(Command.UPDATE_STATE, report.encode(), background = true) { }
 
     /** While the app is visible the connection is kept open so the tablet can ping about a new offer. */
     fun setForeground(on: Boolean) {
         handler.post {
             foreground = on
             handler.removeCallbacks(idle)
-            if (!on) handler.postDelayed(idle, IDLE_MS)
+            if (!on) handler.postDelayed(idle, LinkPolicy.IDLE_MS)
         }
     }
 
     fun startPairing(listener: PairingListener) {
         handler.post {
-            val job = Job({ listener.onFinished(it) }) {
+            val job = Job({ listener.onFinished(it) }, background = false) {
                 teardown() // pairing always uses a fresh connection
                 withConnection(pairing = true) { err ->
                     if (err != null) return@withConnection finish(err)
@@ -331,7 +394,7 @@ class RemoteClient private constructor(context: Context) {
                 }
             }
             pairJob = job
-            queue.add(job)
+            addToQueue(job)
             next()
         }
     }
@@ -347,6 +410,7 @@ class RemoteClient private constructor(context: Context) {
                         vault.save(a.key)
                         prefs.tabletId = a.tabletId
                         connectedTabletId = a.tabletId
+                        keyPresent = true
                     } catch (e: Exception) {
                         awaiting = null
                         return@sendSigned job.finish(Result.FAILED)
@@ -380,7 +444,9 @@ class RemoteClient private constructor(context: Context) {
 
     fun unpair() = handler.post {
         teardown()
+        lastSeen = null
         vault.delete()
+        keyPresent = false
         prefs.clearPairing()
     }
 
@@ -388,7 +454,7 @@ class RemoteClient private constructor(context: Context) {
 
     // region jobs
 
-    private inner class Job(val callback: (Result) -> Unit, val body: Job.() -> Unit) {
+    private inner class Job(val callback: (Result) -> Unit, val background: Boolean, val body: Job.() -> Unit) {
         var done = false
         private val watchdog = Runnable { fail(Result.TIMEOUT, teardown = true) }
 
@@ -424,13 +490,23 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    private fun enqueue(callback: (Result) -> Unit, body: Job.() -> Unit): Job {
-        val job = Job(callback, body)
+    private fun enqueue(callback: (Result) -> Unit, background: Boolean = false, body: Job.() -> Unit): Job {
+        val job = Job(callback, background, body)
         handler.post {
-            queue.add(job)
+            addToQueue(job)
             next()
         }
         return job
+    }
+
+    /** A user's job goes ahead of queued background jobs (offer checks, macro sync, state queries), behind other user jobs. */
+    private fun addToQueue(job: Job) {
+        if (job.background) {
+            queue.add(job)
+            return
+        }
+        val at = queue.indexOfFirst { it.background }
+        if (at < 0) queue.add(job) else queue.add(at, job)
     }
 
     private fun next() {
@@ -438,7 +514,7 @@ class RemoteClient private constructor(context: Context) {
         val job = queue.removeFirstOrNull()
         if (job == null) {
             handler.removeCallbacks(idle)
-            handler.postDelayed(idle, IDLE_MS)
+            handler.postDelayed(idle, LinkPolicy.IDLE_MS)
             return
         }
         handler.removeCallbacks(idle)
@@ -580,7 +656,10 @@ class RemoteClient private constructor(context: Context) {
         val enabled = try { g.setCharacteristicNotification(ch, true) } catch (e: SecurityException) { false }
         if (!enabled) return then()
         op(OP_TIMEOUT_MS, { writeDescriptor(it, cccd) }) { st, _ ->
-            if (st == 0) notifying = true
+            if (st == 0) {
+                notifying = true
+                isLinked = ready
+            }
             then()
         }
     }
@@ -607,14 +686,12 @@ class RemoteClient private constructor(context: Context) {
     }
 
     private fun checkReady(): Result? {
-        val granted = context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
-        if (!granted) return Result.NO_PERMISSION
+        if (!Permissions.bluetoothGranted(context)) return Result.NO_PERMISSION
         return if (adapterEnabled()) null else Result.BLUETOOTH_OFF
     }
 
     private fun adapterEnabled(): Boolean = try {
-        context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        bluetooth?.adapter?.isEnabled == true
     } catch (e: SecurityException) {
         false
     }
@@ -625,18 +702,37 @@ class RemoteClient private constructor(context: Context) {
         val stored = prefs.tabletId
         if (!pairing) {
             if (stored == null || !vault.has()) return done(Result.NOT_PAIRED)
-            if (ready && gatt != null && connectedTabletId?.contentEquals(stored) == true) return done(null)
+            if (ready && gatt != null && connectedTabletId?.contentEquals(stored) == true) {
+                lastSeen?.let { if (it.tabletId.contentEquals(stored)) lastSeen = Seen(it.device, it.tabletId, SystemClock.elapsedRealtime()) }
+                return done(null)
+            }
             teardown()
         }
-        scan(pairing, stored) { err, device, id ->
-            if (err != null || device == null || id == null) return@scan done(err ?: Result.NOT_FOUND)
-            connect(ConnectTarget(device, id), done)
+        val scanThenConnect = {
+            scan(pairing, stored) { err, device, id ->
+                if (err != null || device == null || id == null) return@scan done(err ?: Result.NOT_FOUND)
+                if (!pairing) lastSeen = Seen(device, id, SystemClock.elapsedRealtime())
+                connect(ConnectTarget(device, id, pairing), done)
+            }
+        }
+        // The tablet was seen a moment ago: connect straight to it and only scan if that does not work out.
+        val seen = lastSeen
+        if (!pairing && seen != null && seen.tabletId.contentEquals(stored) &&
+            LinkPolicy.cachedDeviceUsable(SystemClock.elapsedRealtime() - seen.at)
+        ) {
+            connect(ConnectTarget(seen.device, seen.tabletId, pairing = false, timeoutMs = DIRECT_CONNECT_TIMEOUT_MS, retried = true)) { err ->
+                if (err == null) return@connect done(null)
+                lastSeen = null
+                if (checkReady() != null) done(checkReady()) else scanThenConnect()
+            }
+        } else {
+            scanThenConnect()
         }
     }
 
     private fun scan(pairing: Boolean, wanted: ByteArray?, found: (Result?, BluetoothDevice?, ByteArray?) -> Unit) {
         val scanner = try {
-            context.getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner
+            bluetooth?.adapter?.bluetoothLeScanner
         } catch (e: SecurityException) {
             null
         } ?: return found(Result.BLUETOOTH_OFF, null, null)
@@ -658,8 +754,7 @@ class RemoteClient private constructor(context: Context) {
                     val adv = Advertisement.decode(
                         result.scanRecord?.getManufacturerSpecificData(Protocol.COMPANY_ID),
                     ) ?: return@post
-                    val ok = if (pairing) adv.pairing else wanted != null && adv.tabletId.contentEquals(wanted)
-                    if (!ok) return@post
+                    if (!ScanPolicy.accepts(adv, pairing, wanted)) return@post
                     finished = true
                     stop()
                     found(null, result.device, adv.tabletId)
@@ -675,8 +770,14 @@ class RemoteClient private constructor(context: Context) {
                 }
             }
         }
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(Protocol.SERVICE_UUID)).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        // Both the service and the manufacturer data sit in the tablet's one advertising packet, so the controller can
+        // filter on them and wake the watch only for this tablet (or any tablet in pairing mode).
+        val mf = ScanPolicy.filter(wanted, pairing)
+        val filter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(Protocol.SERVICE_UUID))
+            .setManufacturerData(Protocol.COMPANY_ID, mf.data, mf.mask)
+            .build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
         stopScan = { finished = true; stop() }
         handler.postAtTime({
             if (!finished) {
@@ -699,7 +800,7 @@ class RemoteClient private constructor(context: Context) {
         connectTarget = target
         connectDone = done
         handler.removeCallbacks(connectTimeout)
-        handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
+        handler.postDelayed(connectTimeout, target.timeoutMs)
         gatt = try {
             target.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } catch (e: SecurityException) {
@@ -742,6 +843,7 @@ class RemoteClient private constructor(context: Context) {
         val g = gatt ?: return
         gatt = null
         ready = false
+        isLinked = false
         try {
             g.disconnect()
         } catch (_: SecurityException) {
@@ -764,6 +866,8 @@ class RemoteClient private constructor(context: Context) {
         connectedTabletId = null
         nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null
         notifying = false
+        helloSent = false
+        isLinked = false
         closeGatt()
     }
 
@@ -862,15 +966,15 @@ class RemoteClient private constructor(context: Context) {
         private const val GATT_ERROR_133 = 133
         private const val LOCAL_STACK_MIN = 0x80
         private const val LOCAL_STACK_MAX = 0x8F
-        private const val SCAN_TIMEOUT_MS = 8_000L
-        private const val CONNECT_TIMEOUT_MS = 6_000L
+        private const val SCAN_TIMEOUT_MS = 6_000L
+        private const val CONNECT_TIMEOUT_MS = 5_000L
+        private const val DIRECT_CONNECT_TIMEOUT_MS = 2_500L
         private const val OP_TIMEOUT_MS = 4_000L
         private const val MTU_TIMEOUT_MS = 2_500L
         private const val RETRY_DELAY_MS = 300L
         private const val JOB_TIMEOUT_MS = 20_000L
         private const val CONFIRM_TIMEOUT_MS = 10_000L
         private const val PAIRING_WINDOW_MS = Protocol.PAIRING_WINDOW_MS
-        private const val IDLE_MS = 10_000L
         private val SCAN_TOKEN = Any()
 
         @Volatile

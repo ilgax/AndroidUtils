@@ -86,8 +86,26 @@ class UpdateServerTest {
         assertFalse(reconnected)
     }
 
+    /**
+     * Deterministic bytes that are never held in memory. The body must be larger than what the kernel buffers on a
+     * loopback connection (several MB): with a small body the whole response fits into the socket buffers, the server
+     * sees a client that read part of it and closed as a client that finished, and reports COMPLETED.
+     */
+    private class Generated(private val length: Long) : InputStream() {
+        private var pos = 0L
+        override fun read(): Int = if (pos >= length) -1 else ((pos++ * 31).toInt() and 0xFF)
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (pos >= length) return -1
+            val n = minOf(len.toLong(), length - pos).toInt()
+            for (i in 0 until n) b[off + i] = ((pos + i) * 31).toByte()
+            pos += n
+            return n
+        }
+    }
+
     @Test fun anAbortedDownloadCanBeRetried() {
-        val srv = server()
+        val big = 24L * 1024 * 1024
+        val srv = UpdateServer(path, big, { Generated(big) }, 10_000, object : UpdateServer.Listener {})
         val port = srv.start()
         try {
             // Read only the start of the response, then drop the connection.
@@ -98,7 +116,8 @@ class UpdateServerTest {
             assertTrue(srv.isRunning)
             val r = request(port, "GET $path HTTP/1.1")
             assertEquals(200, r.status)
-            assertArrayEquals(apk, r.body)
+            assertEquals(big, r.body.size.toLong())
+            assertTrue(r.body.indices.step(65_537).all { r.body[it] == (it * 31L).toByte() })
         } finally {
             srv.stop()
         }

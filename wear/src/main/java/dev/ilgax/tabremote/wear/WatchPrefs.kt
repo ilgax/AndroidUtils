@@ -5,8 +5,11 @@ import dev.ilgax.tabremote.protocol.AppSlots
 import dev.ilgax.tabremote.protocol.MacroItem
 import dev.ilgax.tabremote.protocol.Protocol
 
-class WatchPrefs(context: Context) {
+class WatchPrefs private constructor(context: Context) {
     private val sp = context.applicationContext.getSharedPreferences("tabremote", Context.MODE_PRIVATE)
+
+    /** Forces the preferences file to load; call off the main thread. */
+    fun preload() { sp.all }
 
     var tabletId: ByteArray?
         get() {
@@ -63,14 +66,19 @@ class WatchPrefs(context: Context) {
 
     fun clearPairing() = sp.edit().remove(KEY_ID).remove(KEY_SLOTS).remove(KEY_MACROS).remove(KEY_MACRO_VERSION).remove(KEY_MACROS_SUPPORTED).apply()
 
-    private companion object {
-        const val KEY_ID = "tablet_id"
-        const val KEY_SLOTS = "slots"
-        const val KEY_CLOSE_FIRST = "close_first"
-        const val KEY_MACROS = "macros"
-        const val KEY_MACRO_VERSION = "macro_version"
-        const val KEY_MACROS_SUPPORTED = "macros_supported"
-        const val KEY_VERIFIED_VERSION = "verified_version"
-        const val KEY_ASKED_NOTIF = "asked_notifications"
+    companion object {
+        @Volatile private var instance: WatchPrefs? = null
+
+        fun get(context: Context): WatchPrefs =
+            instance ?: synchronized(this) { instance ?: WatchPrefs(context).also { instance = it } }
+
+        private const val KEY_ID = "tablet_id"
+        private const val KEY_SLOTS = "slots"
+        private const val KEY_CLOSE_FIRST = "close_first"
+        private const val KEY_MACROS = "macros"
+        private const val KEY_MACRO_VERSION = "macro_version"
+        private const val KEY_MACROS_SUPPORTED = "macros_supported"
+        private const val KEY_VERIFIED_VERSION = "verified_version"
+        private const val KEY_ASKED_NOTIF = "asked_notifications"
     }
 }

@@ -2,17 +2,22 @@ package dev.ilgax.tabremote.wear
 
 import android.Manifest
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.Button
@@ -21,6 +26,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import dev.ilgax.tabremote.protocol.Command
+import dev.ilgax.tabremote.protocol.LinkPolicy
 import dev.ilgax.tabremote.protocol.RetryPolicy
 import dev.ilgax.tabremote.protocol.SpeakerOp
 import dev.ilgax.tabremote.protocol.UpdateReport
@@ -36,7 +42,9 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private val ui = Handler(Looper.getMainLooper())
     private var checkStartedAt = 0L
-    private var lastCheckFailed = false
+    /** Consecutive failed offer checks; drives the poll back-off. */
+    private var pollFailures = 0
+    private var lastPollAt = 0L
     private var mode = Mode.LIST
     private var code = ""
     private var statusText = ""
@@ -47,7 +55,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         client = RemoteClient.get(this)
-        prefs = WatchPrefs(this)
+        prefs = WatchPrefs.get(this)
         updater = WatchUpdater.get(this)
         statusText = getString(R.string.status_ready)
         handleIntent(intent)
@@ -98,13 +106,12 @@ class MainActivity : Activity() {
         client.onUpdateHint = { checkForUpdate() }
         client.onMacrosHint = { syncMacros() }
         updater.listener = { render(); launchPendingConfirm() }
+        registerReceiver(screenState, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON) }, RECEIVER_NOT_EXPORTED)
+        if (client.isPaired && hasPermissions()) client.warmUp() // connect while the user is still looking for a button
         checkForUpdate()
         syncMacros()
         querySpeaker()
-        // While visible, also ask for an offer every few seconds: the tablet's ping only reaches a live, subscribed
-        // connection, which is gone after any link drop, and nothing else would re-establish it.
-        ui.removeCallbacks(poll)
-        ui.postDelayed(poll, POLL_MS)
+        schedulePoll()
         if (client.isPaired && hasPermissions()) {
             updater.verifyIfNewVersion()
             askNotifications()
@@ -113,6 +120,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         ui.removeCallbacks(poll)
+        unregisterReceiver(screenState)
         updater.visible = false
         updater.listener = null
         client.onUpdateHint = null
@@ -121,11 +129,41 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    /** Screen off (or on) without the activity being stopped, e.g. ambient: let go of the radio, resume when it is back. */
+    private val screenState = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                ui.removeCallbacks(poll)
+                client.setForeground(false)
+            } else {
+                client.setForeground(true)
+                checkForUpdate()
+                schedulePoll()
+            }
+        }
+    }
+
+    /**
+     * While visible, look for an offer now and then: the tablet's ping only reaches a live, subscribed connection, which
+     * is gone after any link drop, and nothing else would re-establish it. With the link up the ping does the work, so
+     * the tick is rare; without it, or after failures, see [LinkPolicy.pollDelayMs]. Never while the screen is off.
+     */
     private val poll = object : Runnable {
         override fun run() {
-            if (mode == Mode.LIST) checkForUpdate()
-            ui.postDelayed(this, if (lastCheckFailed) POLL_BACKOFF_MS else POLL_MS)
+            val interactive = getSystemService(PowerManager::class.java).isInteractive
+            val now = SystemClock.elapsedRealtime()
+            if (mode == Mode.LIST && LinkPolicy.shouldPoll(interactive, client.isLinked, now - lastPollAt)) {
+                lastPollAt = now
+                checkForUpdate()
+            }
+            schedulePoll()
         }
+    }
+
+    private fun schedulePoll() {
+        ui.removeCallbacks(poll)
+        val interactive = getSystemService(PowerManager::class.java).isInteractive
+        ui.postDelayed(poll, LinkPolicy.pollDelayMs(interactive, client.isLinked, pollFailures))
     }
 
     override fun onResume() {
@@ -152,110 +190,115 @@ class MainActivity : Activity() {
 
     // region rendering
 
+    /** One line of the screen; [render] builds the list, [reconcile] makes the views match it without recreating them. */
+    private class Row(
+        val kind: Kind,
+        val text: String = "",
+        val primary: Boolean = false,
+        val size: Float = 13f,
+        val checked: Boolean = false,
+        val onClick: (() -> Unit)? = null,
+    )
+
+    private enum class Kind { STATUS, INFO, HEADING, CODE, PILL, TOGGLE, FOOTER }
+
     private fun render() {
-        content.removeAllViews()
-        statusView = TextView(this).apply {
-            text = statusText
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(8))
-        }
-        content.addView(statusView)
+        reconcile(rows())
+    }
+
+    private fun rows(): List<Row> {
+        val out = ArrayList<Row>(24)
+        out += Row(Kind.STATUS, statusText)
         when {
-            mode == Mode.PAIR_SEARCH -> renderSearching()
-            mode == Mode.PAIR_CODE -> renderCode()
-            !client.isPaired -> renderUnpaired()
-            else -> renderList()
+            mode == Mode.PAIR_SEARCH -> {
+                out += info(getString(R.string.pair_search_info))
+                out += pill(getString(R.string.btn_cancel)) { cancelPairing() }
+            }
+            mode == Mode.PAIR_CODE -> {
+                out += info(getString(R.string.pair_compare))
+                out += Row(Kind.CODE, getString(R.string.code_display, code.substring(0, 3), code.substring(3)))
+                out += pill(getString(R.string.btn_confirm), primary = true) {
+                    setStatus(getString(R.string.status_confirming))
+                    client.confirmPairing()
+                }
+                out += pill(getString(R.string.btn_cancel)) { cancelPairing() }
+            }
+            !client.isPaired -> {
+                out += info(getString(R.string.unpaired_info))
+                out += pill(getString(R.string.btn_pair), primary = true) { beginPairing() }
+            }
+            else -> listRows(out)
         }
+        return out
     }
 
-    private fun renderUnpaired() {
-        info(R.string.unpaired_info)
-        pill(R.string.btn_pair, primary = true) { beginPairing() }
-    }
-
-    private fun renderList() {
-        renderUpdate()
-        pill(R.string.btn_lock, primary = true) { run(Command.LOCK) }
-        pill(R.string.btn_play_pause) { run(Command.PLAY_PAUSE) }
-        pill(R.string.btn_vol_up) { run(Command.VOLUME_UP) }
-        pill(R.string.btn_vol_down) { run(Command.VOLUME_DOWN) }
-        pill(R.string.btn_ring) { run(Command.RING) }
-        pill(R.string.btn_close_app) { run(Command.KILL_APP) }
-        pill(
-            when (speakerOn) {
-                true -> R.string.btn_speaker_on
-                false -> R.string.btn_speaker_off
-                null -> R.string.btn_speaker_unknown
-            },
+    private fun listRows(out: MutableList<Row>) {
+        updateRows(out)
+        out += pill(getString(R.string.btn_lock), primary = true) { run(Command.LOCK) }
+        out += pill(getString(R.string.btn_play_pause)) { run(Command.PLAY_PAUSE) }
+        out += pill(getString(R.string.btn_vol_up)) { run(Command.VOLUME_UP) }
+        out += pill(getString(R.string.btn_vol_down)) { run(Command.VOLUME_DOWN) }
+        out += pill(getString(R.string.btn_ring)) { run(Command.RING) }
+        out += pill(getString(R.string.btn_close_app)) { run(Command.KILL_APP) }
+        out += pill(
+            getString(
+                when (speakerOn) {
+                    true -> R.string.btn_speaker_on
+                    false -> R.string.btn_speaker_off
+                    null -> R.string.btn_speaker_unknown
+                },
+            ),
             primary = speakerOn == true,
         ) { speaker(SpeakerOp.TOGGLE) }
 
         val labels = prefs.slotLabels
         if (labels.any { it.isNotEmpty() }) {
-            content.addView(Switch(this).apply {
-                setText(R.string.toggle_close_first)
-                textSize = 14f
-                setTextColor(Color.WHITE)
-                isChecked = prefs.closeFirst
-                isFocusable = false
-                setOnCheckedChangeListener { _, checked ->
-                    prefs.closeFirst = checked
-                    render()
-                }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(4) })
             val switching = prefs.closeFirst
+            out += Row(Kind.TOGGLE, getString(R.string.toggle_close_first), checked = switching) {
+                prefs.closeFirst = !switching
+                render()
+            }
             labels.forEachIndexed { i, label ->
                 if (label.isEmpty()) return@forEachIndexed
                 val text = getString(if (switching) R.string.btn_switch_to else R.string.btn_open, label)
-                pill(text) { run(if (switching) Command.SWITCH_APP else Command.OPEN_APP, i, label) }
+                out += pill(text) { run(if (switching) Command.SWITCH_APP else Command.OPEN_APP, i, label) }
             }
         }
-        renderMacros()
-        pill(R.string.btn_sync) { sync() }
-        pill(R.string.btn_repair) { beginPairing() }
-        pill(R.string.btn_verify) { verifyApp() }
-        versionLabel()
+        // Macros stay hidden entirely unless the tablet's Utils answered a macro sync.
+        if (prefs.macrosSupported == true) {
+            out += Row(Kind.HEADING, getString(R.string.macros_title))
+            val macros = prefs.macros
+            if (macros.isEmpty()) out += info(getString(R.string.macros_empty))
+            for (m in macros) out += pill(m.name) { runMacro(m.id, m.name) }
+        }
+        out += pill(getString(R.string.btn_sync)) { sync() }
+        out += pill(getString(R.string.btn_repair)) { beginPairing() }
+        out += pill(getString(R.string.btn_verify)) { verifyApp() }
+        out += Row(Kind.FOOTER, updater.footer)
     }
 
-    /** Hidden entirely unless the tablet's Utils answered a macro sync. */
-    private fun renderMacros() {
-        if (prefs.macrosSupported != true) return
-        content.addView(TextView(this).apply {
-            text = getString(R.string.macros_title)
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF78909C.toInt())
-            setPadding(0, dp(12), 0, dp(4))
-        })
-        val macros = prefs.macros
-        if (macros.isEmpty()) info(R.string.macros_empty)
-        for (m in macros) pill(m.name) { runMacro(m.id, m.name) }
-    }
-
-    private fun renderUpdate() {
+    private fun updateRows(out: MutableList<Row>) {
         when (val u = updater.state) {
             UpdateUi.Idle -> Unit
             is UpdateUi.Available -> {
-                info(R.string.update_available)
-                pill(getString(R.string.btn_update_to, u.offer.versionCode), primary = true) { updater.start(u.offer) }
-                pill(R.string.btn_dismiss) { updater.dismiss() }
+                out += info(getString(R.string.update_available))
+                out += pill(getString(R.string.btn_update_to, u.offer.versionCode), primary = true) { updater.start(u.offer) }
+                out += pill(getString(R.string.btn_dismiss)) { updater.dismiss() }
             }
-            is UpdateUi.Downloading -> info(getString(R.string.update_downloading, u.percent))
-            is UpdateUi.Retrying -> info(getString(R.string.update_retrying, u.attempt, RetryPolicy.MAX_ATTEMPTS))
-            is UpdateUi.Installing -> info(getString(R.string.update_installing, u.version))
+            is UpdateUi.Downloading -> out += info(getString(R.string.update_downloading, u.percent))
+            is UpdateUi.Retrying -> out += info(getString(R.string.update_retrying, u.attempt, RetryPolicy.MAX_ATTEMPTS))
+            is UpdateUi.Installing -> out += info(getString(R.string.update_installing, u.version))
             is UpdateUi.Confirm -> {
-                info(getString(R.string.update_confirm))
-                info(getString(R.string.update_confirm_note), size = 11f)
+                out += info(getString(R.string.update_confirm))
+                out += info(getString(R.string.update_confirm_note), size = 11f)
             }
             UpdateUi.NeedsInstallPermission -> {
-                info(getString(R.string.update_allow_installs))
-                info(WatchUpdater.ADB_FIX, size = 11f)
-                pill(R.string.btn_dismiss) { updater.dismiss() }
+                out += info(getString(R.string.update_allow_installs))
+                out += info(WatchUpdater.ADB_FIX, size = 11f)
+                out += pill(getString(R.string.btn_dismiss)) { updater.dismiss() }
             }
             is UpdateUi.Failed -> {
-                info(
+                out += info(
                     getString(
                         when (u.failure) {
                             UpdateReport.Failure.NO_WIFI -> R.string.update_fail_no_wifi
@@ -267,30 +310,102 @@ class MainActivity : Activity() {
                         },
                     ),
                 )
-                pill(R.string.btn_dismiss) { updater.dismiss() }
+                out += pill(getString(R.string.btn_dismiss)) { updater.dismiss() }
             }
         }
     }
 
-    private fun renderSearching() {
-        info(R.string.pair_search_info)
-        pill(R.string.btn_cancel) { cancelPairing() }
+    private fun info(text: String, size: Float = 13f) = Row(Kind.INFO, text, size = size)
+
+    private fun pill(text: String, primary: Boolean = false, onClick: () -> Unit) = Row(Kind.PILL, text, primary, onClick = onClick)
+
+    /** Position by position: a view of the right kind is updated in place (text, colour, click), anything else is replaced. */
+    private fun reconcile(rows: List<Row>) {
+        rows.forEachIndexed { i, row ->
+            val existing = content.getChildAt(i)
+            if (existing != null && existing.tag == row.kind) {
+                bind(existing, row)
+            } else {
+                val v = create(row.kind).also { it.tag = row.kind }
+                bind(v, row)
+                if (existing != null) content.removeViewAt(i)
+                content.addView(v, i, params(row.kind))
+            }
+        }
+        if (content.childCount > rows.size) content.removeViews(rows.size, content.childCount - rows.size)
+        statusView = content.getChildAt(0) as TextView
     }
 
-    private fun renderCode() {
-        info(R.string.pair_compare)
-        content.addView(TextView(this).apply {
-            text = getString(R.string.code_display, code.substring(0, 3), code.substring(3))
+    private fun create(kind: Kind): View = when (kind) {
+        Kind.STATUS -> TextView(this).apply {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(8))
+        }
+        Kind.INFO -> TextView(this).apply {
+            gravity = Gravity.CENTER
+            setTextColor(0xFFB0BEC5.toInt())
+            setPadding(0, 0, 0, dp(8))
+        }
+        Kind.HEADING -> TextView(this).apply {
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF78909C.toInt())
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        Kind.CODE -> TextView(this).apply {
             textSize = 30f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
             setPadding(0, dp(4), 0, dp(12))
-        })
-        pill(R.string.btn_confirm, primary = true) {
-            setStatus(getString(R.string.status_confirming))
-            client.confirmPairing()
         }
-        pill(R.string.btn_cancel) { cancelPairing() }
+        Kind.FOOTER -> TextView(this).apply {
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF78909C.toInt())
+            setPadding(0, dp(8), 0, 0)
+        }
+        Kind.TOGGLE -> Switch(this).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            isFocusable = false
+        }
+        Kind.PILL -> Button(this).apply {
+            isAllCaps = false
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            minHeight = dp(52)
+            minimumHeight = dp(52)
+            isFocusable = false // keep focus on the ScrollView so the rotary input scrolls it
+            background = GradientDrawable().apply { cornerRadius = dp(26).toFloat() }
+        }
+    }
+
+    private fun params(kind: Kind) = when (kind) {
+        Kind.TOGGLE -> LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(4) }
+        Kind.PILL -> LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) }
+        else -> LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun bind(v: View, row: Row) {
+        when (row.kind) {
+            Kind.TOGGLE -> (v as Switch).apply {
+                setOnCheckedChangeListener(null)
+                if (text.toString() != row.text) text = row.text
+                isChecked = row.checked
+                setOnCheckedChangeListener { _, _ -> row.onClick?.invoke() }
+            }
+            Kind.PILL -> (v as Button).apply {
+                if (text.toString() != row.text) text = row.text
+                (background as GradientDrawable).setColor(getColor(if (row.primary) R.color.button_primary else R.color.button_bg))
+                setOnClickListener { row.onClick?.invoke() }
+            }
+            else -> (v as TextView).apply {
+                if (row.kind == Kind.INFO) textSize = row.size
+                if (text.toString() != row.text) text = row.text
+            }
+        }
     }
 
     // endregion
@@ -303,8 +418,7 @@ class MainActivity : Activity() {
             val args = if (slot >= 0) byteArrayOf(slot.toByte()) else ByteArray(0)
             client.send(command, args) { r ->
                 if (isDestroyed) return@send
-                setStatus(ResultText.describe(this, r, command, label))
-                if (r == Result.SUCCESS) Haptics.success(this) else Haptics.failure(this)
+                setStatus(ResultText.announce(this, r, command, label))
             }
         }
     }
@@ -326,10 +440,7 @@ class MainActivity : Activity() {
         val state = r.speakerOn
         val changed = state != null && state != speakerOn
         if (state != null) speakerOn = state
-        if (!quiet) {
-            setStatus(ResultText.describe(this, r, Command.SPEAKER))
-            if (r.isOk) Haptics.success(this) else Haptics.failure(this)
-        }
+        if (!quiet) setStatus(ResultText.announce(this, r, Command.SPEAKER))
         if (changed && mode == Mode.LIST) render()
     }
 
@@ -337,11 +448,10 @@ class MainActivity : Activity() {
         setStatus(getString(R.string.status_sending))
         client.runMacro(id) { r ->
             if (isDestroyed) return@runMacro
-            val text = ResultText.describe(this, r, Command.RUN_MACRO)
+            val text = ResultText.announce(this, r, Command.RUN_MACRO)
             setStatus(text)
             // The status line is at the top of a long list, so say it where the finger is too.
             android.widget.Toast.makeText(this, "$name: $text", android.widget.Toast.LENGTH_SHORT).show()
-            if (r == Result.SUCCESS) Haptics.success(this) else Haptics.failure(this)
             if (r == Result.MACRO_NOT_FOUND) syncMacros()
         }
     }
@@ -428,7 +538,7 @@ class MainActivity : Activity() {
         client.checkForUpdate(WatchUpdater.versionCode(this)) { check ->
             checkStartedAt = 0L
             if (isDestroyed) return@checkForUpdate
-            lastCheckFailed = check is UpdateCheck.Failed
+            pollFailures = if (check is UpdateCheck.Failed) pollFailures + 1 else 0
             updater.handleCheck(check)
         }
     }
@@ -477,14 +587,12 @@ class MainActivity : Activity() {
         render()
     }
 
-    private fun hasPermissions() =
-        checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermissions() = Permissions.bluetoothGranted(this)
 
     private fun withPermissions(action: () -> Unit) {
         if (hasPermissions()) return action()
         pendingAction = action
-        requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), REQUEST_BLUETOOTH)
+        requestPermissions(Permissions.BLUETOOTH, REQUEST_BLUETOOTH)
     }
 
     private fun setStatus(text: String) {
@@ -494,67 +602,11 @@ class MainActivity : Activity() {
 
     // endregion
 
-    // region view helpers
-
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun info(res: Int) = info(getString(res))
-
-    private fun info(text: String, size: Float = 13f) {
-        content.addView(TextView(this).apply {
-            this.text = text
-            textSize = size
-            gravity = Gravity.CENTER
-            setTextColor(0xFFB0BEC5.toInt())
-            setPadding(0, 0, 0, dp(8))
-        })
-    }
-
-    /** Small, dim app version at the very end of the list. */
-    private fun versionLabel() {
-        val name = packageManager.getPackageInfo(packageName, 0).versionName ?: return
-        content.addView(TextView(this).apply {
-            text = getString(R.string.app_version, name) + "\n" + updater.installerInfo()
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF78909C.toInt())
-            setPadding(0, dp(8), 0, 0)
-        })
-    }
-
-    private fun pill(res: Int, primary: Boolean = false, onClick: () -> Unit) = pill(getString(res), primary, onClick)
-
-    private fun pill(text: String, primary: Boolean = false, onClick: () -> Unit) {
-        content.addView(
-            Button(this).apply {
-                this.text = text
-                isAllCaps = false
-                textSize = 16f
-                setTextColor(Color.WHITE)
-                minHeight = dp(52)
-                minimumHeight = dp(52)
-                isFocusable = false // keep focus on the ScrollView so the rotary input scrolls it
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(26).toFloat()
-                    setColor(getColor(if (primary) R.color.button_primary else R.color.button_bg))
-                }
-                setOnClickListener { onClick() }
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(4)
-            },
-        )
-    }
-
-    // endregion
 
     private companion object {
         const val REQUEST_BLUETOOTH = 1
         const val REQUEST_NOTIFICATIONS = 2
-        /** How often a visible, paired app asks the tablet for an offer. */
-        const val POLL_MS = 5_000L
-        /** After a failed check (tablet out of range, Bluetooth off) a scan every 5 s would only waste battery. */
-        const val POLL_BACKOFF_MS = 15_000L
         const val CHECK_STUCK_MS = 30_000L
     }
 }

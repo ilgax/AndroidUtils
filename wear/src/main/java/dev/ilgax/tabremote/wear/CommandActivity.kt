@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -22,6 +23,7 @@ class CommandActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WatchUpdater.get(this) // registers the "noticed an offer while the app is closed" hook for this process
+        RemoteClient.get(this)
         // Exported for the tile host: only a fixed set of commands is accepted, with validated args.
         val cmd = Command.fromId(intent.getIntExtra(EXTRA_CMD, -1))
         if (cmd == null || cmd !in ALLOWED) return finish()
@@ -36,7 +38,7 @@ class CommandActivity : Activity() {
             speakerCommand -> SpeakerCodec.encodeArgs(SpeakerOp.fromArg(arg)!!)
             else -> ByteArray(0)
         }
-        val label = if (slotCommand) WatchPrefs(this).slotLabels[arg].ifEmpty { null } else null
+        val label = if (slotCommand) WatchPrefs.get(this).slotLabels[arg].ifEmpty { null } else null
 
         val spinner = ProgressBar(this).apply { isIndeterminate = true }
         val text = TextView(this).apply { textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt()) }
@@ -56,9 +58,8 @@ class CommandActivity : Activity() {
 
         RemoteClient.get(this).send(cmd, args) { result ->
             if (isDestroyed) return@send
-            spinner.visibility = android.view.View.GONE
-            text.text = ResultText.describe(this, result, cmd, label)
-            if (result.isOk) Haptics.success(this) else Haptics.failure(this)
+            spinner.visibility = View.GONE
+            text.text = ResultText.announce(this, result, cmd, label)
             main.postDelayed({ finish() }, 1000)
         }
     }

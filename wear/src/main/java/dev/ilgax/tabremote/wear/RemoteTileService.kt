@@ -11,12 +11,20 @@ import androidx.wear.protolayout.TimelineBuilders
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
-import com.google.common.util.concurrent.Futures
+import androidx.concurrent.futures.ResolvableFuture
+import androidx.wear.tiles.EventBuilders
 import com.google.common.util.concurrent.ListenableFuture
 import dev.ilgax.tabremote.protocol.Command
 import dev.ilgax.tabremote.protocol.SpeakerOp
 
 class RemoteTileService : TileService() {
+    /** The tile came into view: open the connection now so the tap that follows only has to send. */
+    override fun onTileEnterEvent(requestParams: EventBuilders.TileEnterEvent) {
+        super.onTileEnterEvent(requestParams)
+        val client = RemoteClient.get(this)
+        if (client.isPaired && Permissions.bluetoothGranted(this)) client.warmUp()
+    }
+
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
         val layout = LayoutElementBuilders.Column.Builder()
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
@@ -39,13 +47,13 @@ class RemoteTileService : TileService() {
             .setResourcesVersion(RESOURCES_VERSION)
             .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
             .build()
-        return Futures.immediateFuture(tile)
+        return done(tile)
     }
 
     override fun onTileResourcesRequest(
         requestParams: RequestBuilders.ResourcesRequest,
     ): ListenableFuture<ResourceBuilders.Resources> =
-        Futures.immediateFuture(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
+        done(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
 
     private fun row(a: Pair<Int, Command>, b: Pair<Int, Command>) = LayoutElementBuilders.Row.Builder()
         .addContent(button(a.first, a.second))
@@ -93,6 +101,8 @@ class RemoteTileService : TileService() {
         .setSize(sp(size))
         .setColor(argb(color))
         .build()
+
+    private fun <T> done(value: T): ListenableFuture<T> = ResolvableFuture.create<T>().also { it.set(value) }
 
     private companion object {
         const val RESOURCES_VERSION = "2"

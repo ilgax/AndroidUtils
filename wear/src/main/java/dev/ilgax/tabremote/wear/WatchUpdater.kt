@@ -60,7 +60,7 @@ sealed interface UpdateUi {
 class WatchUpdater private constructor(context: Context) {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
-    private val prefs = WatchPrefs(this.context)
+    private val prefs = WatchPrefs.get(this.context)
 
     @Volatile var state: UpdateUi = UpdateUi.Idle
         private set
@@ -417,8 +417,14 @@ class WatchUpdater private constructor(context: Context) {
 
     enum class VerifyOutcome { SENT, NOT_SENT, TABLET_TOO_OLD, UNREADABLE }
 
+    /** "v0.4.2" and the installer line, shown at the end of the list. Resolved once (it costs binder calls). */
+    val footer: String by lazy {
+        val name = try { context.packageManager.getPackageInfo(context.packageName, 0).versionName } catch (e: Exception) { null }
+        (if (name != null) context.getString(R.string.app_version, name) + "\n" else "") + installerInfo()
+    }
+
     /** "installer: x · owner: y": who installed this app and who may update it silently. For the diagnostics line. */
-    fun installerInfo(): String = try {
+    private fun installerInfo(): String = try {
         val si = context.packageManager.getInstallSourceInfo(context.packageName)
         val owner = if (Build.VERSION.SDK_INT >= 34) si.updateOwnerPackageName else null
         "installer: ${si.installingPackageName ?: "none"} · owner: ${owner ?: "none"}"
@@ -438,7 +444,6 @@ class WatchUpdater private constructor(context: Context) {
     companion object {
         /** The adb command that allows this app to install packages; shown verbatim on the watch. */
         const val ADB_FIX = "adb shell appops set dev.ilgax.tabremote.wear REQUEST_INSTALL_PACKAGES allow"
-        const val AUTO_WINDOW_SEC = OfferPolicy.AUTO_WINDOW_SEC
         private const val WIFI_TIMEOUT_MS = 20_000L
         private const val CONNECT_TIMEOUT_MS = 4_000
         private const val READ_TIMEOUT_MS = 15_000
@@ -455,7 +460,14 @@ class WatchUpdater private constructor(context: Context) {
         fun get(context: Context): WatchUpdater =
             instance ?: synchronized(this) { instance ?: WatchUpdater(context).also { instance = it } }
 
-        fun versionCode(context: Context): Int =
-            context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toInt()
+        @Volatile private var cachedVersion = 0
+
+        /** The installed versionCode; it cannot change while the process lives (an update restarts it). */
+        fun versionCode(context: Context): Int {
+            if (cachedVersion == 0) {
+                cachedVersion = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toInt()
+            }
+            return cachedVersion
+        }
     }
 }

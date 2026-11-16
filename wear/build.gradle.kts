@@ -11,8 +11,8 @@ android {
         applicationId = "dev.ilgax.tabremote.wear"
         minSdk = 31
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.4.1"
+        versionCode = 7
+        versionName = "0.4.2"
     }
 
     // Fixed debug key (the one the first sideloaded build was signed with): Utils bundles this APK as an
@@ -43,6 +43,5 @@ android {
 dependencies {
     implementation(project(":protocol"))
     implementation("androidx.wear.tiles:tiles:1.4.1")
-    implementation("androidx.wear.protolayout:protolayout:1.2.1")
-    implementation("com.google.guava:guava:33.3.1-android")
+    implementation("androidx.concurrent:concurrent-futures:1.1.0") // ResolvableFuture for the tile (replaces Guava)
 }

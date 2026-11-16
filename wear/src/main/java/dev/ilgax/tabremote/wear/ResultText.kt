@@ -4,6 +4,13 @@ import android.content.Context
 import dev.ilgax.tabremote.protocol.Command
 
 object ResultText {
+    /** Describes [result], gives the matching haptic feedback and returns the text; one place for every screen that sends a command. */
+    fun announce(context: Context, result: Result, command: Command?, label: String? = null): String {
+        if (result.isOk) Haptics.success(context) else Haptics.failure(context)
+        return describe(context, result, command, label)
+    }
+
+
     /** [label] is the slot's app label for OPEN_APP / SWITCH_APP. */
     fun describe(context: Context, result: Result, command: Command?, label: String? = null): String {
         val res = when (result) {
