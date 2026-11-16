@@ -17,13 +17,19 @@ import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.OfferPolicy
 import dev.ilgax.utils.protocol.RetryPolicy
 import dev.ilgax.utils.protocol.StaleSessions
+import dev.ilgax.utils.protocol.TransferPolicy
+import dev.ilgax.utils.protocol.UpdateDataFrame
+import dev.ilgax.utils.protocol.ResumePlan
+import dev.ilgax.utils.protocol.WindowAssembler
 import dev.ilgax.utils.protocol.UpdateFetch
 import dev.ilgax.utils.protocol.UpdateFlow
 import dev.ilgax.utils.protocol.UpdateOffer
 import dev.ilgax.utils.protocol.UpdateReport
 import dev.ilgax.utils.protocol.WatchIntegrity
 import java.io.File
+import java.io.FileOutputStream
 import java.io.FilterInputStream
+import java.io.RandomAccessFile
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -37,7 +43,14 @@ sealed interface UpdateUi {
     data object Idle : UpdateUi
     /** An authenticated offer is waiting for the user's tap. */
     class Available(val offer: UpdateOffer) : UpdateUi
-    class Downloading(val version: Int, val percent: Int) : UpdateUi
+    data class Downloading(
+        val version: Int,
+        val percent: Int,
+        /** True while the APK comes over the Bluetooth link. */
+        val bluetooth: Boolean = false,
+        /** Set when Bluetooth was skipped or given up on and Wi-Fi is used instead; the UI says why. */
+        val fallback: TransferPolicy.FallbackReason? = null,
+    ) : UpdateUi
     /** A download attempt failed; [attempt] is the one that just failed, the next one starts after a short backoff. */
     class Retrying(val attempt: Int) : UpdateUi
     class Installing(val version: Int) : UpdateUi
@@ -49,7 +62,8 @@ sealed interface UpdateUi {
 }
 
 /**
- * Downloads an offered APK over Wi-Fi and installs it with PackageInstaller.
+ * Downloads an offered APK and installs it with PackageInstaller. Bluetooth first when the tablet offers it (windows over the
+ * authenticated GATT link, resumed from the last good offset after a drop), Wi-Fi when it does not or when Bluetooth fails or stalls.
  *
  * An offer is only ever created by tapping "Update watch app" (or "Reinstall") on the tablet, so it is the user's request.
  * What to do with one is decided by [OfferPolicy]: a fresh offer starts by itself while Tab Remote is visible, an offer that
@@ -171,7 +185,17 @@ class WatchUpdater private constructor(context: Context) {
             report(UpdateReport(UpdateReport.Phase.DOWNLOADING, 0))
             var offer = first
             var attempt = 0
-            while (true) {
+            var viaWifi = true
+            val start = TransferPolicy.initial(first)
+            if (start is TransferPolicy.Start.Bluetooth) {
+                when (val bt = downloadBluetooth(first, file)) {
+                    BtOutcome.Ok -> viaWifi = false
+                    is BtOutcome.Fallback -> useWifi(first.versionCode, bt.reason)
+                }
+            } else if (start is TransferPolicy.Start.Wifi) {
+                useWifi(first.versionCode, start.reason)
+            }
+            while (viaWifi) {
                 attempt++
                 val failure = downloadOnce(offer, file) ?: break
                 when (val decision = RetryPolicy.decide(attempt, failure)) {
@@ -183,11 +207,11 @@ class WatchUpdater private constructor(context: Context) {
                         // A spent token cannot be reused: ask the tablet for a fresh offer (new token) first.
                         if (decision.freshOffer) freshOffer(offer)?.let { offer = it }
                         lastReportedPercent = -1
-                        set(UpdateUi.Downloading(offer.versionCode, 0))
+                        set((state as? UpdateUi.Downloading)?.copy(percent = 0) ?: UpdateUi.Downloading(offer.versionCode, 0))
                     }
                 }
             }
-            // downloadOnce() only returns null when the hash matched. Now the signer: only our own key may replace us.
+            // Either transport only gets here with the hash matched. Now the signer: only our own key may replace us.
             report(UpdateReport(UpdateReport.Phase.VERIFYING, 100))
             val own = InstalledBinary.ownCert(context)
             val downloaded = InstalledBinary.archiveCert(context, file, context.packageName)
@@ -197,6 +221,94 @@ class WatchUpdater private constructor(context: Context) {
             fail(UpdateReport.Failure.UNKNOWN, e.message)
         } finally {
             file.delete()
+        }
+    }
+
+    private sealed interface BtOutcome {
+        data object Ok : BtOutcome
+        class Fallback(val reason: TransferPolicy.FallbackReason) : BtOutcome
+    }
+
+    /** Wi-Fi is used from here on; the UI says why (when Bluetooth was wanted), and progress starts again. */
+    private fun useWifi(version: Int, reason: TransferPolicy.FallbackReason) {
+        lastReportedPercent = -1
+        set(UpdateUi.Downloading(version, 0, bluetooth = false, fallback = reason))
+    }
+
+    /**
+     * Pulls the APK in windows over the GATT link into [file]. Each window is appended as it arrives, so after any failure the file
+     * length is the offset to resume from; reconnecting is the connection layer's job and the next window just asks again. The
+     * [TransferPolicy] decides retry or fallback. Returns Ok only for a complete file whose SHA-256 equals the offer's.
+     */
+    private fun downloadBluetooth(offer: UpdateOffer, file: File): BtOutcome {
+        val client = RemoteClient.get(context)
+        val tracker = TransferPolicy.Tracker(SystemClock.elapsedRealtime())
+        file.delete()
+        set(UpdateUi.Downloading(offer.versionCode, 0, bluetooth = true))
+        client.setHighThroughput(true)
+        try {
+            var total = -1
+            while (true) {
+                val length = file.length()
+                val have = ResumePlan.resumeFrom(length, total)
+                if (have.toLong() != length) RandomAccessFile(file, "rw").use { it.setLength(have.toLong()) }
+                if (total in 0..have) break
+                val assembler = WindowAssembler(have, UpdateDataFrame.WINDOW_MAX, total)
+                val cancelled = AtomicBoolean()
+                val latch = CountDownLatch(1)
+                val result = AtomicReference<Result>()
+                FileOutputStream(file, true).use { out ->
+                    client.pullUpdate(
+                        offer.token, have, UpdateDataFrame.WINDOW_MAX, cancelled::get,
+                        onFrame = { frame ->
+                            try {
+                                when (assembler.accept(frame) { b, from, n -> out.write(b, from, n) }) {
+                                    WindowAssembler.Verdict.ACCEPTED, WindowAssembler.Verdict.DUPLICATE -> {
+                                        if (assembler.total > 0) progress((assembler.next * 100L / assembler.total).toInt())
+                                        if (assembler.complete) RemoteClient.FrameAction.DONE else RemoteClient.FrameAction.CONTINUE
+                                    }
+                                    else -> RemoteClient.FrameAction.ABORT
+                                }
+                            } catch (e: IOException) {
+                                RemoteClient.FrameAction.ABORT // the file was closed under a window that timed out
+                            }
+                        },
+                    ) { r -> result.set(r); latch.countDown() }
+                    if (!latch.await(WINDOW_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                        cancelled.set(true)
+                        result.set(Result.TIMEOUT)
+                    }
+                    out.flush()
+                }
+                if (assembler.total >= 0) total = assembler.total
+                val now = SystemClock.elapsedRealtime()
+                if (assembler.next > have) tracker.onProgress(now)
+                val r = result.get()
+                if (r == Result.SUCCESS && assembler.complete) continue
+                val failure = when {
+                    r == Result.UNKNOWN_COMMAND -> TransferPolicy.WindowFailure.NO_CHANNEL
+                    r == Result.MTU_TOO_SMALL -> TransferPolicy.WindowFailure.MTU_TOO_SMALL
+                    r == Result.UPDATE_BUSY -> TransferPolicy.WindowFailure.BUSY
+                    r == Result.AUTH_FAILED || r == Result.UPDATE_GONE || r == Result.RATE_LIMITED -> TransferPolicy.WindowFailure.REJECTED
+                    assembler.failure == WindowAssembler.Verdict.GAP -> TransferPolicy.WindowFailure.GAP
+                    assembler.failure == WindowAssembler.Verdict.INVALID -> TransferPolicy.WindowFailure.BAD_FRAME
+                    r == Result.FAILED -> TransferPolicy.WindowFailure.REJECTED // the tablet answered FAILED to the request itself
+                    r == Result.TIMEOUT -> TransferPolicy.WindowFailure.TIMEOUT
+                    else -> TransferPolicy.WindowFailure.LINK_LOST
+                }
+                when (val d = tracker.onWindowFailed(failure, now)) {
+                    is TransferPolicy.Decision.Fallback -> { file.delete(); return BtOutcome.Fallback(d.reason) }
+                    is TransferPolicy.Decision.Retry -> Thread.sleep(d.delayMs)
+                }
+            }
+            report(UpdateReport(UpdateReport.Phase.DOWNLOADING, 100))
+            if (!java.security.MessageDigest.isEqual(UpdateFetch.sha256(file), offer.sha256)) {
+                file.delete()
+                return BtOutcome.Fallback(TransferPolicy.FallbackReason.CORRUPT)
+            }
+            return BtOutcome.Ok
+        } finally {
+            client.setHighThroughput(false)
         }
     }
 
@@ -264,10 +376,10 @@ class WatchUpdater private constructor(context: Context) {
     }
 
     private fun progress(percent: Int) {
-        val v = (state as? UpdateUi.Downloading)?.version ?: return
+        val d = state as? UpdateUi.Downloading ?: return
         if (percent / PROGRESS_STEP == lastReportedPercent / PROGRESS_STEP && percent < 100) return
         lastReportedPercent = percent
-        set(UpdateUi.Downloading(v, percent))
+        set(d.copy(percent = percent))
         if (percent % 25 == 0 || percent >= 100) report(UpdateReport(UpdateReport.Phase.DOWNLOADING, percent))
     }
 
@@ -445,6 +557,8 @@ class WatchUpdater private constructor(context: Context) {
         /** The adb command that allows this app to install packages; shown verbatim on the watch. */
         const val ADB_FIX = "adb shell appops set dev.ilgax.utils.wear REQUEST_INSTALL_PACKAGES allow"
         private const val WIFI_TIMEOUT_MS = 20_000L
+        /** Upper bound for one window including queueing behind other jobs; the link's own stall timers fire much earlier. */
+        private const val WINDOW_WAIT_MS = 90_000L
         private const val CONNECT_TIMEOUT_MS = 4_000
         private const val READ_TIMEOUT_MS = 15_000
         private const val SEND_WAIT_MS = 4_000L

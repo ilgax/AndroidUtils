@@ -36,7 +36,7 @@ object ResultText {
             Result.SPEAKER_ON_NO_SHIZUKU, Result.SPEAKER_OFF_NO_SHIZUKU -> R.string.res_speaker_no_shizuku
             // A tablet whose Utils predates the SPEAKER command answers UNKNOWN_COMMAND.
             Result.UNKNOWN_COMMAND -> if (command == Command.SPEAKER) R.string.res_speaker_unsupported else R.string.res_failed
-            Result.FAILED, Result.UNKNOWN -> R.string.res_failed
+            Result.FAILED, Result.UNKNOWN, Result.UPDATE_GONE, Result.UPDATE_BUSY, Result.MTU_TOO_SMALL -> R.string.res_failed
         }
         return context.getString(res)
     }

@@ -97,6 +97,9 @@
     <string name="remote_app_btn_retry">Retry</string>
     <string name="remote_app_btn_verify">Verify watch app</string>
     <string name="remote_app_btn_reinstall">Reinstall</string>
+    <string name="remote_app_update_over">Update over</string>
+    <string name="remote_app_over_bluetooth">Bluetooth (default)</string>
+    <string name="remote_app_over_wifi">Wi-Fi only</string>
     <string name="remote_app_integrity">Installed app check</string>
     <string name="remote_app_integrity_none">Not checked yet</string>
     <string name="remote_app_integrity_asking">Asking the watch. Open Tab Remote on it if nothing happens</string>

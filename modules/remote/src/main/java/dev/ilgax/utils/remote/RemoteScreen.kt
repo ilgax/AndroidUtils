@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -234,6 +235,23 @@ private fun WatchAppGroup(app: WatchAppUi, paired: Boolean, actions: RemoteActio
                 LinearProgressIndicator(
                     progress = { update.percent / 100f },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+            }
+        }
+        SettingsRow(
+            label = stringResource(R.string.remote_app_update_over),
+            iconRes = CoreR.drawable.ic_info,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = app.overBluetooth,
+                    onClick = { actions.onSetUpdateOverBluetooth(true) },
+                    label = { Text(stringResource(R.string.remote_app_over_bluetooth)) },
+                )
+                FilterChip(
+                    selected = !app.overBluetooth,
+                    onClick = { actions.onSetUpdateOverBluetooth(false) },
+                    label = { Text(stringResource(R.string.remote_app_over_wifi)) },
                 )
             }
         }

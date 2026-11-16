@@ -100,6 +100,7 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
                     integrity = updates.integrity,
                     updatedTo = updates.updatedTo,
                     verifying = updates.verifyRequested,
+                    overBluetooth = prefs.updateOverBluetooth,
                 )
             },
             macros = macroData.macros.map { MacroUi(it.id, it.name, it.steps.size, MacroSummary.of(context, engine.registry, it)) },
@@ -160,6 +161,7 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
                 tick++
             },
             onCancelUpdate = { updates.stop(); tick++ },
+            onSetUpdateOverBluetooth = { prefs.updateOverBluetooth = it; tick++ },
             onHideNotification = {
                 RemoteService.ensureChannel(context)
                 context.startActivitySafe(

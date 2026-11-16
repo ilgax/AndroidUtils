@@ -22,6 +22,13 @@ object Protocol {
      */
     val VERIFY_UUID: UUID = UUID.fromString("4a7d93c0-18e5-4b2f-a6c9-0d5e7f31b862")
 
+    /**
+     * Writable + notify: Bluetooth transfer of the update APK ([UpdateDataFrame]). The watch writes an authenticated window
+     * request (bound to a NONCE read, like VERIFY) and the tablet answers with notifications. Absent on Utils builds that
+     * predate it; the watch then downloads over Wi-Fi.
+     */
+    val UPDATE_DATA_UUID: UUID = UUID.fromString("f6863211-e975-4981-af7b-aab8996e9d34")
+
     /** Standard Client Characteristic Configuration descriptor. */
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
@@ -22,6 +23,7 @@ import dev.ilgax.utils.protocol.OfferFrame
 import dev.ilgax.utils.protocol.Protocol
 import dev.ilgax.utils.protocol.SpeakerCodec
 import dev.ilgax.utils.protocol.Status
+import dev.ilgax.utils.protocol.UpdateDataFrame
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
 
@@ -57,6 +59,13 @@ class GattController(
     private val macroGrants = HashMap<String, MacroGrant>()
     private val macroSnapshots = HashMap<String, ByteArray>()
     private var offerChar: BluetoothGattCharacteristic? = null
+    private var dataChar: BluetoothGattCharacteristic? = null
+    /** Watches subscribed to UPDATE_DATA notifications; a window is only served to one of them. */
+    private val dataSubscribers = HashSet<String>()
+    /** The frames of the window being sent to a device, one notification at a time (the stack takes the next after onNotificationSent). */
+    private class DataWindow(val token: ByteArray, val frames: ArrayDeque<ByteArray>, val end: Int, var retries: Int = 0)
+    private val dataWindows = HashMap<String, DataWindow>()
+    private val dataInFlight = HashSet<String>()
     private val failures = HashMap<String, Int>()
     private val lockedUntil = HashMap<String, Long>()
 
@@ -83,6 +92,7 @@ class GattController(
             appsGrants.clear(); appsSnapshots.clear()
             offerGrants.clear(); offerSnapshots.clear(); offerSubscribers.clear()
             macroGrants.clear(); macroSnapshots.clear()
+            dataSubscribers.clear(); dataWindows.clear(); dataInFlight.clear()
         }
     }
 
@@ -157,6 +167,16 @@ class GattController(
         svc.addCharacteristic(
             BluetoothGattCharacteristic(Protocol.VERIFY_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, write),
         )
+        val data = BluetoothGattCharacteristic(
+            Protocol.UPDATE_DATA_UUID,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            write,
+        )
+        data.addDescriptor(
+            BluetoothGattDescriptor(Protocol.CCCD_UUID, BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE),
+        )
+        svc.addCharacteristic(data)
+        dataChar = data
         return svc
     }
 
@@ -176,6 +196,8 @@ class GattController(
                     pairBuffers.remove(addr); appsGrants.remove(addr); appsSnapshots.remove(addr)
                     offerGrants.remove(addr); offerSnapshots.remove(addr); offerSubscribers.remove(addr)
                     macroGrants.remove(addr); macroSnapshots.remove(addr)
+                    dataSubscribers.remove(addr); dataWindows.remove(addr); dataInFlight.remove(addr)
+                    UpdateHost.get(context).data.release(addr)
                     if (newState == BluetoothProfile.STATE_DISCONNECTED) onReady() // re-assert advertising
                 }
             }
@@ -203,7 +225,8 @@ class GattController(
             device: BluetoothDevice, requestId: Int, offset: Int, descriptor: BluetoothGattDescriptor,
         ) {
             handler.post {
-                val on = descriptor.uuid == Protocol.CCCD_UUID && device.address in offerSubscribers
+                val subscribers = if (descriptor.characteristic?.uuid == Protocol.UPDATE_DATA_UUID) dataSubscribers else offerSubscribers
+                val on = descriptor.uuid == Protocol.CCCD_UUID && device.address in subscribers
                 if (descriptor.uuid != Protocol.CCCD_UUID) {
                     respond(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
                 } else {
@@ -221,13 +244,18 @@ class GattController(
             handler.post {
                 val ok = descriptor.uuid == Protocol.CCCD_UUID && !preparedWrite && offset == 0 && data.size == 2
                 if (ok) {
-                    if (data.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) offerSubscribers.add(device.address)
-                    else offerSubscribers.remove(device.address)
+                    val subscribers = if (descriptor.characteristic?.uuid == Protocol.UPDATE_DATA_UUID) dataSubscribers else offerSubscribers
+                    if (data.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) subscribers.add(device.address)
+                    else subscribers.remove(device.address)
                 }
                 if (responseNeeded) {
                     respond(device, requestId, if (ok) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
                 }
             }
+        }
+
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            handler.post { onDataSent(device.address, status) }
         }
 
         override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
@@ -347,6 +375,16 @@ class GattController(
                 }
                 reply(processIntegrity(addr, value).code, null)
             }
+            Protocol.UPDATE_DATA_UUID -> {
+                // One authenticated window request per write, bound to the nonce; the window follows as notifications.
+                if (prepared || offset != 0) {
+                    reply(Status.FAILED.code, null)
+                    return
+                }
+                val status = processUpdateData(device, value)
+                reply(status.code, null)
+                if (status == Status.SUCCESS) handler.post { pumpData(addr) } // after the write response
+            }
             Protocol.PAIR_UUID -> {
                 if (prepared) {
                     val buf = pairBuffers.getOrPut(addr) { ByteArrayOutputStream() }
@@ -418,6 +456,88 @@ class GattController(
         return status
     }
 
+    private fun processUpdateData(device: BluetoothDevice, frame: ByteArray): Status {
+        val addr = device.address
+        val now = System.currentTimeMillis()
+        if ((lockedUntil[addr] ?: 0L) > now) return Status.RATE_LIMITED
+        val nonce = nonces.getOrPut(addr) { newNonce() }
+        val status = try {
+            if (!vault.has()) {
+                Status.AUTH_FAILED
+            } else if (addr !in dataSubscribers) {
+                Status.FAILED
+            } else {
+                val mac: (ByteArray) -> ByteArray = { vault.mac(it) ?: throw IllegalStateException("no key") }
+                val host = UpdateHost.get(context)
+                when (val r = host.data.handle(addr, mac, nonce, mtus[addr] ?: DEFAULT_MTU, frame)) {
+                    is UpdateDataServer.Result.Rejected -> r.status
+                    is UpdateDataServer.Result.Window -> {
+                        // A new request replaces whatever was still queued for this device (the watch gave up on it).
+                        dataInFlight.remove(addr)
+                        dataWindows[addr] = DataWindow(frame.copyOfRange(0, UpdateDataFrame.TOKEN_SIZE), ArrayDeque(r.frames), r.end)
+                        Status.SUCCESS
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Status.FAILED
+        }
+        nonces[addr] = newNonce() // one nonce per attempt, whatever the outcome
+        if (status == Status.AUTH_FAILED) {
+            val n = (failures[addr] ?: 0) + 1
+            if (n >= MAX_FAILURES) {
+                failures.remove(addr)
+                lockedUntil[addr] = now + LOCKOUT_MS
+            } else failures[addr] = n
+        } else if (status == Status.SUCCESS) {
+            failures.remove(addr)
+        }
+        return status
+    }
+
+    /** Sends the next frame of [addr]'s window, or finishes it. Runs on the worker thread between other callbacks, so commands never wait for a whole window. */
+    private fun pumpData(addr: String) {
+        val w = dataWindows[addr] ?: return
+        if (addr in dataInFlight) return
+        val frame = w.frames.firstOrNull()
+        if (frame == null) {
+            dataWindows.remove(addr)
+            UpdateHost.get(context).data.release(addr)
+            UpdateHost.get(context).onDataServed(w.token, w.end)
+            return
+        }
+        val s = server
+        val ch = dataChar
+        val device = devices[addr]
+        if (s == null || ch == null || device == null) return abortData(addr)
+        val sent = try {
+            s.notifyCharacteristicChanged(device, ch, false, frame) == BluetoothStatusCodes.SUCCESS
+        } catch (e: SecurityException) {
+            false
+        }
+        if (sent) {
+            w.frames.removeFirst()
+            w.retries = 0
+            dataInFlight.add(addr)
+        } else if (++w.retries > DATA_BUSY_RETRIES) {
+            abortData(addr)
+        } else {
+            handler.postDelayed({ pumpData(addr) }, DATA_BUSY_DELAY_MS) // the stack is busy with another notification
+        }
+    }
+
+    private fun onDataSent(addr: String, status: Int) {
+        if (!dataInFlight.remove(addr)) return
+        if (status != BluetoothGatt.GATT_SUCCESS) abortData(addr) else pumpData(addr)
+    }
+
+    /** Drops the rest of the window; the watch times out and asks again from its last good offset. */
+    private fun abortData(addr: String) {
+        dataWindows.remove(addr)
+        dataInFlight.remove(addr)
+        UpdateHost.get(context).data.release(addr)
+    }
+
     private fun verifyAndRun(addr: String, nonce: ByteArray, frame: ByteArray): Status {
         pairing.tryCommit(nonce, frame) { key ->
             vault.save(key)
@@ -456,5 +576,7 @@ class GattController(
         const val MAX_FAILURES = 5
         const val LOCKOUT_MS = 30_000L
         const val PAIR_MAX = 128
+        const val DATA_BUSY_RETRIES = 50
+        const val DATA_BUSY_DELAY_MS = 10L
     }
 }

@@ -16,6 +16,8 @@ class UpdateOffer(
     val addresses: List<String>,
     /** Install even if the watch already runs this version (a "Reinstall" from the tablet). */
     val force: Boolean = false,
+    /** The tablet can send the APK over the GATT link (UPDATE_DATA); the HTTP fields stay valid as the fallback. */
+    val bluetooth: Boolean = false,
 ) {
     /** The only path the tablet's HTTP server answers. */
     fun path(): String = pathFor(token)
@@ -24,7 +26,7 @@ class UpdateOffer(
 
     override fun equals(other: Any?): Boolean = other is UpdateOffer && versionCode == other.versionCode &&
         port == other.port && token.contentEquals(other.token) && sha256.contentEquals(other.sha256) &&
-        ageSec == other.ageSec && addresses == other.addresses && force == other.force
+        ageSec == other.ageSec && addresses == other.addresses && force == other.force && bluetooth == other.bluetooth
 
     /** Identifies this offer's one-shot download; a new offer from the tablet has a new one. */
     fun key(): String = hex(token)
@@ -41,7 +43,9 @@ class UpdateOffer(
  * OFFER characteristic payload:
  * `format(1) | flags(1) | [versionCode(4) | port(2) | ageSec(2) | token(16) | sha256(32) | n(1) | n * ipv4(4)] | tag(32)`.
  * flags bit0 = an offer follows (otherwise "no offer"), bit1 = force (install even at the same version), bit2 = the tablet
- * asks the watch to report its installed binary ([IntegrityFrame]); bit2 may accompany "no offer". tag = HMAC-SHA256(key, "ofr" | nonce | everything before the tag),
+ * asks the watch to report its installed binary ([IntegrityFrame]); bit2 may accompany "no offer"; bit3 = the tablet serves the APK over
+ * Bluetooth too (UPDATE_DATA, see [UpdateDataFrame]). Old watches ignore flag bits they do not know and the frame is not longer, so the
+ * format stays 1; a tablet that predates bit3 simply never sets it and the watch uses the HTTP fields. tag = HMAC-SHA256(key, "ofr" | nonce | everything before the tag),
  * where nonce is the one the watch used for the GET_OFFER frame that granted this read. Fits one long read (< 512 bytes).
  */
 object OfferFrame {
@@ -65,6 +69,7 @@ object OfferFrame {
     private const val FLAG_OFFER = 1
     private const val FLAG_FORCE = 2
     private const val FLAG_VERIFY = 4
+    private const val FLAG_BLUETOOTH = 8
 
     fun encode(mac: (ByteArray) -> ByteArray, nonce: ByteArray, offer: UpdateOffer?, verifyRequested: Boolean = false): ByteArray {
         require(nonce.size == Protocol.NONCE_SIZE) { "bad nonce" }
@@ -76,7 +81,7 @@ object OfferFrame {
             require(offer.port in 1..0xFFFF && offer.ageSec in 0..0xFFFF && offer.versionCode >= 0) { "bad field" }
             require(offer.addresses.size in 1..MAX_ADDRESSES) { "bad address count" }
             val ips = offer.addresses.map { parseIpv4(it) ?: throw IllegalArgumentException("bad address") }
-            byteArrayOf(FORMAT.toByte(), (FLAG_OFFER or verify or (if (offer.force) FLAG_FORCE else 0)).toByte()) + u32(offer.versionCode) + u16(offer.port) + u16(offer.ageSec) +
+            byteArrayOf(FORMAT.toByte(), (FLAG_OFFER or verify or (if (offer.force) FLAG_FORCE else 0) or (if (offer.bluetooth) FLAG_BLUETOOTH else 0)).toByte()) + u32(offer.versionCode) + u16(offer.port) + u16(offer.ageSec) +
                 offer.token + offer.sha256 + byteArrayOf(ips.size.toByte()) + ips.fold(ByteArray(0)) { a, b -> a + b }
         }
         return body + tag(mac, nonce, body)
@@ -105,7 +110,7 @@ object OfferFrame {
             return Result.Invalid(Failure.MALFORMED)
         }
         val ips = List(n) { i -> (0 until 4).joinToString(".") { j -> (body[o + i * 4 + j].toInt() and 0xFF).toString() } }
-        return Result.Valid(UpdateOffer(version, port, token, sha, age, ips, (flags and FLAG_FORCE) != 0), verifyRequested)
+        return Result.Valid(UpdateOffer(version, port, token, sha, age, ips, (flags and FLAG_FORCE) != 0, (flags and FLAG_BLUETOOTH) != 0), verifyRequested)
     }
 
     /** Strict dotted quad; null for anything else. */

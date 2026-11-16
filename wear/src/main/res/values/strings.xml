@@ -29,6 +29,10 @@
     <string name="update_available">Update available from the tablet</string>
     <string name="btn_update_to">Update to v%1$d</string>
     <string name="update_downloading">Downloading %1$d%%</string>
+    <string name="update_downloading_bt">Downloading over Bluetooth %1$d%%</string>
+    <string name="update_fallback_not_offered">The tablet doesn\'t offer Bluetooth transfer, using Wi-Fi</string>
+    <string name="update_fallback_failed">Bluetooth transfer failed, using Wi-Fi</string>
+    <string name="update_fallback_stalled">Bluetooth transfer stalled, using Wi-Fi</string>
     <string name="update_installing">Installing v%1$d…</string>
     <string name="update_retrying">Download failed, retrying (%1$d of %2$d)…</string>
     <string name="update_confirm">Confirm the install on the next screen</string>

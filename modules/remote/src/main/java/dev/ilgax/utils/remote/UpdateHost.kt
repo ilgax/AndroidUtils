@@ -69,6 +69,8 @@ class UpdateHost private constructor(context: Context) {
     ) {
         @Volatile var ended: UpdateServer.Reason? = null
         @Volatile var report: UpdateReport? = null
+        /** Highest APK offset the watch has been sent over Bluetooth (end of a fully sent window). */
+        @Volatile var btServed = 0L
     }
 
     enum class StartResult { STARTED, NO_APK, NO_ADDRESS, FAILED }
@@ -77,6 +79,9 @@ class UpdateHost private constructor(context: Context) {
     private var bundledRead = false
     private var payload: Payload? = null
     @Volatile private var session: Session? = null
+
+    /** Serves UPDATE_DATA windows of the live offer's APK; one window at a time. */
+    val data = UpdateDataServer(source = ::dataSource)
 
     /** The last installed-binary verdict; null = the watch has not reported one since Utils started. */
     @Volatile var integrity: IntegrityResult? = null
@@ -141,7 +146,10 @@ class UpdateHost private constructor(context: Context) {
         } catch (e: IOException) {
             return StartResult.NO_APK
         }
-        val addresses = UpdateAddresses.collect()
+        var addresses = UpdateAddresses.collect()
+        // Without a network the update can still go over Bluetooth. The offer format needs an address, so it carries one that
+        // fails fast; the Wi-Fi fallback then ends in the watch's usual "couldn't reach the tablet".
+        if (addresses.isEmpty() && prefs.updateOverBluetooth) addresses = listOf(NO_NETWORK_ADDRESS)
         if (addresses.isEmpty()) return StartResult.NO_ADDRESS
         val token = ByteArray(TOKEN_SIZE).also { random.nextBytes(it) }
         lateinit var server: UpdateServer
@@ -182,7 +190,25 @@ class UpdateHost private constructor(context: Context) {
         val s = refreshForRetry(session ?: return null)
         if (s.ended != null || !s.server.isRunning) return null
         val age = ((System.currentTimeMillis() - s.issuedAt) / 1000).toInt().coerceIn(0, 0xFFFF)
-        return UpdateOffer(s.versionCode, s.port, s.token, s.sha256, age, s.addresses, s.force)
+        return UpdateOffer(s.versionCode, s.port, s.token, s.sha256, age, s.addresses, s.force, bluetooth = prefs.updateOverBluetooth)
+    }
+
+    /**
+     * The APK for a Bluetooth window request, only while this exact token is the live offer: the transfer is bound to the offer,
+     * ends with it (done, cancelled, timed out, replaced by a new token) and is off when the setting says Wi-Fi only.
+     */
+    private fun dataSource(token: ByteArray): UpdateDataServer.Source? {
+        if (!prefs.updateOverBluetooth) return null
+        val s = session ?: return null
+        if (s.ended != null || !s.server.isRunning || !MessageDigest.isEqual(s.token, token)) return null
+        return UpdateDataServer.Source(s.token, s.size.toInt()) { context.assets.open(APK_ASSET) }
+    }
+
+    /** A window up to [end] was fully sent to the watch for the offer with [token]. */
+    fun onDataServed(token: ByteArray, end: Int) {
+        val s = session?.takeIf { MessageDigest.isEqual(it.token, token) } ?: return
+        if (end > s.btServed) s.btServed = end.toLong()
+        RemoteState.poke()
     }
 
     /**
@@ -241,13 +267,22 @@ class UpdateHost private constructor(context: Context) {
 
     /** UPDATE_STATE. Called on the GATT thread after the frame authenticated. */
     fun onReport(report: UpdateReport) {
-        session?.report = report
+        val s = session
+        s?.report = report
+        // Over Bluetooth nothing tells the one-shot HTTP server the download is done: the watch moving on to verifying or installing
+        // is the signal. Same end state as an HTTP download that completed (a hash retry then gets a fresh token).
+        if (s != null && s.ended == null && s.btServed >= s.size &&
+            (report.phase == UpdateReport.Phase.VERIFYING || report.phase == UpdateReport.Phase.INSTALLING)
+        ) {
+            s.server.stop()
+            s.ended = UpdateServer.Reason.COMPLETED
+        }
         RemoteState.poke()
     }
 
     fun snapshot(): UpdateSnapshot? {
         val s = session ?: return null
-        return UpdateSnapshot(s.ended, s.server.bytesServed, s.size, s.deadline, s.report)
+        return UpdateSnapshot(s.ended, maxOf(s.server.bytesServed, s.btServed), s.size, s.deadline, s.report)
     }
 
     private fun hashBundled(): Payload {
@@ -269,6 +304,7 @@ class UpdateHost private constructor(context: Context) {
         const val APK_ASSET = "watch-update.apk"
         const val PROPS_ASSET = "watch-update.properties"
         private const val TOKEN_SIZE = 16
+        private const val NO_NETWORK_ADDRESS = "0.0.0.0"
 
         @SuppressLint("StaticFieldLeak") // application context only
         @Volatile private var instance: UpdateHost? = null

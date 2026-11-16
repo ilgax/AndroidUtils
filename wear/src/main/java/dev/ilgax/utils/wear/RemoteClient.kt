@@ -42,6 +42,7 @@ import dev.ilgax.utils.protocol.SpeakerCodec
 import dev.ilgax.utils.protocol.SpeakerOp
 import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.protocol.UpdateCodec
+import dev.ilgax.utils.protocol.UpdateDataFrame
 import dev.ilgax.utils.protocol.UpdateOffer
 import dev.ilgax.utils.protocol.UpdateReport
 import java.security.KeyPair
@@ -112,6 +113,15 @@ class RemoteClient private constructor(context: Context) {
     /** Optional: absent on tablet apps without the installed-binary check. */
     private var verifyCh: BluetoothGattCharacteristic? = null
     private var notifying = false
+    /** Optional: absent on tablet apps that cannot send the update over Bluetooth. */
+    private var updateDataCh: BluetoothGattCharacteristic? = null
+    private var dataNotifying = false
+    /** The link's MTU once negotiated (23 until then). */
+    @Volatile private var linkMtu = DEFAULT_MTU
+    /** The frame sink of the update window being pulled; null between windows. Touched on the client thread only. */
+    private var windowSink: ((ByteArray) -> Unit)? = null
+    private var wantHighThroughput = false
+    private var highApplied = false
     /** HELLO (the watch's version) is sent once per connection. */
     private var helloSent = false
     @Volatile private var foreground = false
@@ -373,6 +383,100 @@ class RemoteClient private constructor(context: Context) {
     fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback = callback)
 
     /** Best-effort progress for the tablet's "Watch app" section; failures are ignored. */
+    /** What [pullUpdate] asks of the frame callback. */
+    enum class FrameAction { CONTINUE, DONE, ABORT }
+
+    /**
+     * Keeps the link at CONNECTION_PRIORITY_HIGH while an APK is pulled over Bluetooth; [on] = false restores balanced. The
+     * priority belongs to one connection, so it is re-applied at the start of each window after a reconnect.
+     */
+    fun setHighThroughput(on: Boolean) {
+        handler.post {
+            wantHighThroughput = on
+            applyPriority()
+        }
+    }
+
+    private fun applyPriority() {
+        val g = gatt ?: return
+        if (wantHighThroughput == highApplied) return
+        try {
+            g.requestConnectionPriority(
+                if (wantHighThroughput) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED,
+            )
+            highApplied = wantHighThroughput
+        } catch (_: SecurityException) {
+        }
+    }
+
+    /**
+     * Pulls one window of the update APK from the tablet's UPDATE_DATA characteristic: reads a NONCE, writes the authenticated
+     * request for [window] bytes at [offset], then hands every notification to [onFrame] until it says DONE (or ABORT).
+     * Results: SUCCESS = window complete; UNKNOWN_COMMAND = the tablet has no such characteristic; MTU_TOO_SMALL; the tablet's
+     * statuses (AUTH_FAILED, UPDATE_GONE, UPDATE_BUSY, FAILED); TIMEOUT when no frame arrived for [WINDOW_STALL_MS]; CONNECT_FAILED
+     * when the link dropped; FAILED after an ABORT. [cancelled] is checked before the window starts and on every frame.
+     */
+    fun pullUpdate(
+        token: ByteArray, offset: Int, window: Int, cancelled: () -> Boolean,
+        onFrame: (ByteArray) -> FrameAction, callback: (Result) -> Unit,
+    ) {
+        enqueue(callback, background = true) {
+            if (cancelled()) return@enqueue finish(Result.CANCELLED)
+            withConnection(pairing = false) { err ->
+                if (err != null) return@withConnection finish(err)
+                val dCh = updateDataCh
+                val nCh = nonceCh
+                if (dCh == null || nCh == null) return@withConnection finish(Result.UNKNOWN_COMMAND)
+                ensureMtu {
+                    if (linkMtu < UpdateDataFrame.MIN_MTU) return@ensureMtu finish(Result.MTU_TOO_SMALL)
+                    applyPriority()
+                    subscribeData(dCh) {
+                        if (!dataNotifying) return@subscribeData finish(Result.FAILED)
+                        op(OP_TIMEOUT_MS, { read(it, nCh) }) { st, nonce ->
+                            if (st != 0 || nonce == null) return@op finish(mapStatus(st))
+                            val request = try {
+                                UpdateDataFrame.encodeRequest(this@RemoteClient::vaultMac, nonce, token, offset, window)
+                            } catch (e: Exception) {
+                                return@op finish(Result.FAILED)
+                            }
+                            var outcome: Int? = null
+                            var waiting = false
+                            windowSink = { frame ->
+                                val action = if (cancelled()) FrameAction.ABORT else onFrame(frame)
+                                if (action == FrameAction.CONTINUE) {
+                                    arm(JOB_TIMEOUT_MS)
+                                    if (waiting) {
+                                        handler.removeCallbacks(opTimeout)
+                                        handler.postDelayed(opTimeout, WINDOW_STALL_MS)
+                                    }
+                                } else {
+                                    windowSink = null
+                                    outcome = if (action == FrameAction.DONE) 0 else Status.FAILED.code
+                                    if (waiting) completeOp(outcome!!, null)
+                                }
+                            }
+                            op(OP_TIMEOUT_MS, { write(it, dCh, request) }) { st2, _ ->
+                                if (st2 != 0) {
+                                    windowSink = null
+                                    return@op finish(mapStatus(st2))
+                                }
+                                val early = outcome
+                                if (early != null) return@op finish(mapStatus(early))
+                                waiting = true
+                                // The write response is the tablet's yes; now every frame must keep arriving.
+                                op(WINDOW_STALL_MS, { true }) { st3, _ ->
+                                    waiting = false
+                                    windowSink = null
+                                    finish(mapStatus(st3))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun reportUpdate(report: UpdateReport) = send(Command.UPDATE_STATE, report.encode(), background = true) { }
 
     /** While the app is visible the connection is kept open so the tablet can ping about a new offer. */
@@ -628,7 +732,7 @@ class RemoteClient private constructor(context: Context) {
     }
 
     private fun requestMtu(g: BluetoothGatt): Boolean = try {
-        g.requestMtu(247)
+        g.requestMtu(UpdateDataFrame.WANTED_MTU)
     } catch (e: SecurityException) {
         false
     }
@@ -646,6 +750,19 @@ class RemoteClient private constructor(context: Context) {
         }
     } catch (e: SecurityException) {
         false
+    }
+
+    /** As [subscribe], for the update data characteristic (its own flag: the offer ping keeps its own). */
+    private fun subscribeData(ch: BluetoothGattCharacteristic, then: () -> Unit) {
+        val cccd = ch.getDescriptor(Protocol.CCCD_UUID)
+        val g = gatt
+        if (dataNotifying || cccd == null || g == null) return then()
+        val enabled = try { g.setCharacteristicNotification(ch, true) } catch (e: SecurityException) { false }
+        if (!enabled) return then()
+        op(OP_TIMEOUT_MS, { writeDescriptor(it, cccd) }) { st, _ ->
+            if (st == 0) dataNotifying = true
+            then()
+        }
     }
 
     /** Enables notifications for [ch] once per connection; continues whatever the outcome. */
@@ -865,6 +982,11 @@ class RemoteClient private constructor(context: Context) {
         mtuRequested = false
         connectedTabletId = null
         nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null
+        updateDataCh = null
+        dataNotifying = false
+        linkMtu = DEFAULT_MTU
+        windowSink = null
+        highApplied = false
         notifying = false
         helloSent = false
         isLinked = false
@@ -909,6 +1031,7 @@ class RemoteClient private constructor(context: Context) {
                 offerCh = svc?.getCharacteristic(Protocol.OFFER_UUID)
                 macrosCh = svc?.getCharacteristic(Protocol.MACROS_UUID)
                 verifyCh = svc?.getCharacteristic(Protocol.VERIFY_UUID)
+                updateDataCh = svc?.getCharacteristic(Protocol.UPDATE_DATA_UUID)
                 if (nonceCh == null || commandCh == null || pairCh == null || appsCh == null) {
                     return@post connectFinish(Result.CONNECT_FAILED, teardown = true)
                 }
@@ -919,7 +1042,12 @@ class RemoteClient private constructor(context: Context) {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            handler.post { if (g === gatt) completeOp(status, null) }
+            handler.post {
+                if (g === gatt) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) linkMtu = mtu
+                    completeOp(status, null)
+                }
+            }
         }
 
         override fun onCharacteristicRead(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
@@ -942,12 +1070,20 @@ class RemoteClient private constructor(context: Context) {
         }
 
         // The ping carries no data on purpose: the offer itself is only ever read after an authenticated GET_OFFER.
-        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) = hint(g, ch, value.firstOrNull())
+        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) {
+            if (ch.uuid == Protocol.UPDATE_DATA_UUID) dataFrame(g, value) else hint(g, ch, value.firstOrNull())
+        }
+
+        private fun dataFrame(g: BluetoothGatt, value: ByteArray) {
+            handler.post { if (g === gatt) windowSink?.invoke(value) }
+        }
 
         @Deprecated("Used below API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
-            if (Build.VERSION.SDK_INT < 33) hint(g, ch, ch.value?.firstOrNull())
+            if (Build.VERSION.SDK_INT < 33) {
+                if (ch.uuid == Protocol.UPDATE_DATA_UUID) dataFrame(g, ch.value?.copyOf() ?: return) else hint(g, ch, ch.value?.firstOrNull())
+            }
         }
 
         private fun hint(g: BluetoothGatt, ch: BluetoothGattCharacteristic, first: Byte?) {
@@ -973,6 +1109,9 @@ class RemoteClient private constructor(context: Context) {
         private const val MTU_TIMEOUT_MS = 2_500L
         private const val RETRY_DELAY_MS = 300L
         private const val JOB_TIMEOUT_MS = 20_000L
+        private const val DEFAULT_MTU = 23
+        /** No frame of a window for this long: the window failed (the link may be alive but the tablet stopped sending). */
+        private const val WINDOW_STALL_MS = 6_000L
         private const val CONFIRM_TIMEOUT_MS = 10_000L
         private const val PAIRING_WINDOW_MS = Protocol.PAIRING_WINDOW_MS
         private val SCAN_TOKEN = Any()

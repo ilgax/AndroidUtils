@@ -9,6 +9,8 @@ enum class Result {
     NOTHING_TO_CLOSE, SLOT_EMPTY, APP_START_FAILED, MACRO_BUSY, MACRO_NOT_FOUND,
     /** Answers to SPEAKER: the kill switch's resulting state; the NO_SHIZUKU pair means the tablet could not act on a request. */
     SPEAKER_ON, SPEAKER_OFF, SPEAKER_ON_NO_SHIZUKU, SPEAKER_OFF_NO_SHIZUKU,
+    /** Answers to an UPDATE_DATA request: not the live offer's token / another transfer is running; and a link MTU too small to try. */
+    UPDATE_GONE, UPDATE_BUSY, MTU_TOO_SMALL,
     UNKNOWN;
 
     /** Worked as intended: plain success, or a SPEAKER answer from a tablet whose Shizuku is ready. */
@@ -39,6 +41,8 @@ enum class Result {
             Status.SPEAKER_OFF -> SPEAKER_OFF
             Status.SPEAKER_ON_NO_SHIZUKU -> SPEAKER_ON_NO_SHIZUKU
             Status.SPEAKER_OFF_NO_SHIZUKU -> SPEAKER_OFF_NO_SHIZUKU
+            Status.UPDATE_GONE -> UPDATE_GONE
+            Status.UPDATE_BUSY -> UPDATE_BUSY
             Status.UNKNOWN -> UNKNOWN
         }
     }

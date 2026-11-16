@@ -28,6 +28,7 @@ import android.widget.TextView
 import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.LinkPolicy
 import dev.ilgax.utils.protocol.RetryPolicy
+import dev.ilgax.utils.protocol.TransferPolicy
 import dev.ilgax.utils.protocol.SpeakerOp
 import dev.ilgax.utils.protocol.UpdateReport
 
@@ -285,7 +286,10 @@ class MainActivity : Activity() {
                 out += pill(getString(R.string.btn_update_to, u.offer.versionCode), primary = true) { updater.start(u.offer) }
                 out += pill(getString(R.string.btn_dismiss)) { updater.dismiss() }
             }
-            is UpdateUi.Downloading -> out += info(getString(R.string.update_downloading, u.percent))
+            is UpdateUi.Downloading -> {
+                u.fallback?.let { out += info(getString(fallbackText(it)), size = 11f) }
+                out += info(getString(if (u.bluetooth) R.string.update_downloading_bt else R.string.update_downloading, u.percent))
+            }
             is UpdateUi.Retrying -> out += info(getString(R.string.update_retrying, u.attempt, RetryPolicy.MAX_ATTEMPTS))
             is UpdateUi.Installing -> out += info(getString(R.string.update_installing, u.version))
             is UpdateUi.Confirm -> {
@@ -313,6 +317,13 @@ class MainActivity : Activity() {
                 out += pill(getString(R.string.btn_dismiss)) { updater.dismiss() }
             }
         }
+    }
+
+    /** Why the update is coming over Wi-Fi although Bluetooth is preferred. */
+    private fun fallbackText(reason: TransferPolicy.FallbackReason): Int = when (reason) {
+        TransferPolicy.FallbackReason.NOT_OFFERED, TransferPolicy.FallbackReason.NO_CHANNEL -> R.string.update_fallback_not_offered
+        TransferPolicy.FallbackReason.STALLED -> R.string.update_fallback_stalled
+        else -> R.string.update_fallback_failed
     }
 
     private fun info(text: String, size: Float = 13f) = Row(Kind.INFO, text, size = size)

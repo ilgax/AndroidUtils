@@ -74,7 +74,7 @@ class SpeakerTest {
         assertFalse(r.status == Status.AUTH_FAILED)
         // The watch side maps the status integer, including one it has never heard of, without throwing.
         assertEquals(Status.UNKNOWN_COMMAND, Status.fromStatus(0x06))
-        assertEquals(Status.UNKNOWN, Status.fromStatus(0x9D))
+        assertEquals(Status.UNKNOWN, Status.fromStatus(0x9F))
         assertTrue(SpeakerCodec.decodeReply(Status.fromStatus(0x9D)) == null)
     }
 }

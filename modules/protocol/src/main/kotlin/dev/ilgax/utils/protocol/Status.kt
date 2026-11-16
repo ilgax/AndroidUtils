@@ -2,7 +2,7 @@ package dev.ilgax.utils.protocol
 
 /**
  * Status returned as the GATT write response status for COMMAND / PAIR writes.
- * App codes 0x90..0x9C stay in the ATT application-error range but clear Android's local
+ * App codes 0x90..0x9E stay in the ATT application-error range but clear Android's local
  * stack statuses (0x80..0x8F, e.g. 133 = GATT_ERROR).
  */
 enum class Status(val code: Int) {
@@ -26,6 +26,10 @@ enum class Status(val code: Int) {
     /** SPEAKER replies when Shizuku is not ready on the tablet: the state is what the tablet has, a requested change was not made. */
     SPEAKER_OFF_NO_SHIZUKU(0x9B),
     SPEAKER_ON_NO_SHIZUKU(0x9C),
+    /** UPDATE_DATA: the token is not the current offer's (stale, expired, cancelled, or Bluetooth transfer switched off). */
+    UPDATE_GONE(0x9D),
+    /** UPDATE_DATA: another watch is being served right now. */
+    UPDATE_BUSY(0x9E),
     UNKNOWN(-1);
 
     companion object {

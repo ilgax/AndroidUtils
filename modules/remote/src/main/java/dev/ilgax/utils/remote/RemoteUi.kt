@@ -22,6 +22,8 @@ data class WatchAppUi(
     val updatedTo: Int? = null,
     /** The tablet asked the watch for a report and none arrived yet. */
     val verifying: Boolean = false,
+    /** "Update over": true = Bluetooth with Wi-Fi as the fallback (default), false = Wi-Fi only. */
+    val overBluetooth: Boolean = true,
 ) {
     /** Show "Updated to x": the watch reports exactly the version the last update brought, and nothing is running. */
     val justUpdated: Boolean get() = updatedTo != null && updatedTo == reportedCode && update is WatchUpdateState.Idle
@@ -79,6 +81,8 @@ class RemoteActions(
     /** Asks the watch to hash its installed APK and report it. */
     val onVerifyWatch: () -> Unit = {},
     val onCancelUpdate: () -> Unit = {},
+    /** The "Update over" setting: true = Bluetooth (default), false = Wi-Fi only. */
+    val onSetUpdateOverBluetooth: (Boolean) -> Unit = {},
     val onRunMacro: (Int) -> Unit = {},
     val onAddMacro: () -> Unit = {},
     val onEditMacro: (Int) -> Unit = {},
