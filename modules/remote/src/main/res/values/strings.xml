@@ -4,6 +4,11 @@
 
     <string name="remote_channel_name">Remote listener</string>
     <string name="remote_notification_title">Listening for watch</string>
+    <string name="remote_group_notification">Notification</string>
+    <string name="remote_hide_notification">Hide notification</string>
+    <string name="remote_notification_shown">Shown</string>
+    <string name="remote_notification_hidden">Hidden</string>
+    <string name="remote_hide_notification_hint">Android requires a notification for the watch listener to run in the background, but you can turn it off and listening keeps working.</string>
     <string name="remote_stop_ringing">Stop ringing</string>
 
     <string name="remote_card_listening_paired">Listening · paired</string>

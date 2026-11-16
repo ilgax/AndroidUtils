@@ -105,6 +105,7 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
             macros = macroData.macros.map { MacroUi(it.id, it.name, it.steps.size, MacroSummary.of(context, engine.registry, it)) },
             runs = runs,
             runningMacro = running,
+            notificationHidden = RemoteService.isNotificationHidden(context),
         )
     }
 
@@ -159,6 +160,14 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
                 tick++
             },
             onCancelUpdate = { updates.stop(); tick++ },
+            onHideNotification = {
+                RemoteService.ensureChannel(context)
+                context.startActivitySafe(
+                    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        .putExtra(Settings.EXTRA_CHANNEL_ID, RemoteService.CHANNEL_ID),
+                )
+            },
             onAddMacro = { MacroDraft.blank().let { editing = it to it } },
             onEditMacro = { id -> engine.store.get(id)?.let { m -> MacroDraft.of(m).let { editing = it to it } } },
             onRunMacro = { id ->

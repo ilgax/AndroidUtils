@@ -165,10 +165,7 @@ class RemoteService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, getString(R.string.remote_channel_name), NotificationManager.IMPORTANCE_LOW),
-        )
+        ensureChannel(this)
         val open = PendingIntent.getActivity(
             this, 0, packageManager.getLaunchIntentForPackage(packageName), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -176,6 +173,8 @@ class RemoteService : Service() {
             .setSmallIcon(R.drawable.ic_stat_remote)
             .setContentTitle(getString(R.string.remote_notification_title))
             .setOngoing(true)
+            .setPriority(Notification.PRIORITY_MIN)
+            .setOnlyAlertOnce(true)
             .setContentIntent(open)
         if (RemoteState.ringing) {
             val stop = PendingIntent.getService(
@@ -187,7 +186,8 @@ class RemoteService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "remote"
+        const val CHANNEL_ID = "remote_min"
+        private const val OLD_CHANNEL_ID = "remote"
         private const val NOTIFICATION_ID = 1
         const val ACTION_PAIR = "dev.ilgax.utils.remote.PAIR"
         const val ACTION_STOP_RING = "dev.ilgax.utils.remote.STOP_RING"
@@ -195,6 +195,28 @@ class RemoteService : Service() {
         @Volatile
         var instance: RemoteService? = null
             private set
+
+        /**
+         * Creates the minimum-importance listener channel (collapsed at the bottom of the shade, no status-bar icon)
+         * and removes the old low-importance one. Safe to call repeatedly; a user's choice on the channel is kept.
+         */
+        fun ensureChannel(context: Context) {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            nm.deleteNotificationChannel(OLD_CHANNEL_ID)
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, context.getString(R.string.remote_channel_name), NotificationManager.IMPORTANCE_MIN).apply {
+                    setShowBadge(false)
+                    setSound(null, null)
+                    enableVibration(false)
+                },
+            )
+        }
+
+        /** Whether the user hid the listener notification (channel off or app notifications off). The service runs either way. */
+        fun isNotificationHidden(context: Context): Boolean {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            return NotificationVisibility.isHidden(nm.getNotificationChannel(CHANNEL_ID)?.importance, nm.areNotificationsEnabled())
+        }
 
         fun isRunning() = instance != null
 

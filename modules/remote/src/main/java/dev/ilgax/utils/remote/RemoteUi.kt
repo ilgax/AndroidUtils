@@ -50,6 +50,8 @@ data class RemoteUiState(
     /** Newest first. */
     val runs: List<RunRecord> = emptyList(),
     val runningMacro: RunningMacro? = null,
+    /** The listener's foreground notification is turned off in system settings. */
+    val notificationHidden: Boolean = false,
 )
 
 /** What the pairing sheet is showing. */
@@ -80,6 +82,7 @@ class RemoteActions(
     val onRunMacro: (Int) -> Unit = {},
     val onAddMacro: () -> Unit = {},
     val onEditMacro: (Int) -> Unit = {},
+    val onHideNotification: () -> Unit = {},
 )
 
 internal fun statusTextRes(s: Status): Int = when (s) {

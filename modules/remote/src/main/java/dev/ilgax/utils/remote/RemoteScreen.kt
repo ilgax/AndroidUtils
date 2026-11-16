@@ -5,6 +5,7 @@ package dev.ilgax.utils.remote
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -98,6 +99,26 @@ fun RemoteScreen(
             )
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
                 FilledTonalButton(onClick = actions.onStartPairing) { Text(stringResource(R.string.remote_btn_pair)) }
+            }
+        }
+
+        SettingsGroup(title = stringResource(R.string.remote_group_notification)) {
+            SettingsRow(
+                label = stringResource(R.string.remote_hide_notification),
+                iconRes = CoreR.drawable.ic_info,
+                onClick = actions.onHideNotification,
+            ) {
+                Column {
+                    Text(
+                        stringResource(if (state.notificationHidden) R.string.remote_notification_hidden else R.string.remote_notification_shown),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        stringResource(R.string.remote_hide_notification_hint),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 

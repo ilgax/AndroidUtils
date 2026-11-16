@@ -35,7 +35,7 @@ Pure Kotlin, exact big-rational arithmetic; steps are (LaTeX line, short caption
 
 ## Install and first run
 
-1. Install `dist/utils-0.8.2-debug.apk` (arm64 only) (signed with the shared debug key, so later builds update in place).
+1. Install `dist/utils-0.8.3-debug.apk` (arm64 only) (signed with the shared debug key, so later builds update in place).
 2. Start Shizuku (wireless debugging) and open Utils; use the banner to grant Shizuku permission. Allow notifications when asked.
 3. Quick Settings: edit tiles and add **Speaker kill**, **Hotspot** and **Solve**. Long-press the launcher icon for the **Speaker switch** and **Hotspot** shortcuts.
 4. Watch remote: open the module and work through Setup (Bluetooth permissions, notifications, Bluetooth on, accessibility, battery exemption). For a sideloaded app, allow restricted settings first: App info, three-dot menu. Then "Pair a watch", compare the 6-digit code with the watch, confirm on the tablet, then on the watch.
@@ -87,6 +87,8 @@ Not confirmed on any device:
 ## Watch app
 
 `wear/` is the Wear OS app "Tab Remote" (`dev.ilgax.tabremote.wear`): BLE central, app and tile that send signed commands to the Utils tablet side (`modules/remote`, wire format in `modules/protocol`, pure Kotlin/JVM with JUnit tests). Build it with `./gradlew :wear:assembleDebug :wear:lintDebug`; `:feature-remote` bundles the resulting APK, so no separate dist APK is kept. Its debug APK is signed with `keystore/watch-debug.keystore` (certificate SHA-256 `97ce8589...1dbd8`).
+
+**Listener notification (Utils 0.8.3).** The "Listening for watch" foreground notification now lives on a minimum-importance channel (`remote_min`; the old `remote` channel is deleted): collapsed at the bottom of the shade, silent, no status-bar icon, no badge. Watch remote > Notification > **Hide notification** opens that channel's system settings and shows Shown or Hidden. Android requires the notification for a foreground service, but turning it off does not stop the service on Android 13+ (it stays listed in the Task Manager). The macro channel and watch-update notifications are unchanged. Not confirmed on a device.
 
 Watch 0.4.0 (versionCode 5) adds the **Speaker kill switch** button to the main screen (ON/OFF, asked when the app opens, toggled on tap) and a **Speaker kill** tile button that toggles it. The command is HMAC-authenticated like every other; on the tablet it goes through the core action registry (`speaker.on`/`speaker.off`/`speaker.toggle`) and the `ActionFacts.Fact.SpeakerKillSwitchOn` probe, so `:feature-remote` does not depend on `:feature-speaker`. Nothing changes without Shizuku; the reply then says so. Utils 0.8.0 bundles this build, so Watch remote > Watch app offers it as an update (it is the same signing key).
 
