@@ -7,9 +7,9 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.MacroList
-import dev.ilgax.tabremote.protocol.SpeakerCodec
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.MacroList
+import dev.ilgax.utils.protocol.SpeakerCodec
 import dev.ilgax.utils.core.action.ActionFacts
 import dev.ilgax.utils.core.action.ActionRegistry
 import dev.ilgax.utils.core.action.ParamValues
@@ -18,9 +18,9 @@ import dev.ilgax.utils.core.shizuku.ShizukuState
 import dev.ilgax.utils.core.shizuku.ShizukuStatus
 import kotlinx.coroutines.runBlocking
 import dev.ilgax.utils.remote.macros.MacroEngine
-import dev.ilgax.tabremote.protocol.Status
-import dev.ilgax.tabremote.protocol.UpdateCodec
-import dev.ilgax.tabremote.protocol.UpdateReport
+import dev.ilgax.utils.protocol.Status
+import dev.ilgax.utils.protocol.UpdateCodec
+import dev.ilgax.utils.protocol.UpdateReport
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -55,7 +55,7 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
 
     /**
      * The kill switch lives in another module; it is reached through the action registry ("speaker.on", "speaker.off",
-     * "speaker.toggle") and its state through [ActionFacts], so this module does not know :feature-speaker.
+     * "speaker.toggle") and its state through [ActionFacts], so this module does not know :speaker.
      */
     private fun speaker(args: ByteArray): Status {
         val op = SpeakerCodec.decodeArgs(args) ?: return Status.FAILED
@@ -132,7 +132,7 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
 
     /** [switchFrom] also closes the previous foreground app; having none to close is not an error. */
     private fun openApp(slot: Int?, switchFrom: Boolean): Status {
-        if (slot == null || slot !in 0 until dev.ilgax.tabremote.protocol.Protocol.APP_SLOTS) return Status.FAILED
+        if (slot == null || slot !in 0 until dev.ilgax.utils.protocol.Protocol.APP_SLOTS) return Status.FAILED
         val svc = RemoteA11y.service() ?: return Status.ACCESSIBILITY_DISABLED
         val pkg = prefs.slot(slot) ?: return Status.SLOT_EMPTY
         val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: return Status.SLOT_EMPTY

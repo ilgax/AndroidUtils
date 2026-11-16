@@ -1,8 +1,8 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.SpeakerCodec
-import dev.ilgax.tabremote.protocol.SpeakerOp
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.SpeakerCodec
+import dev.ilgax.utils.protocol.SpeakerOp
+import dev.ilgax.utils.protocol.Status
 
 /** Decision logic of the SPEAKER command, free of Android so it can be unit tested with fakes. */
 internal object SpeakerRemote {

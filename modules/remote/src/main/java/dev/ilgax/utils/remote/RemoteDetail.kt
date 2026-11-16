@@ -26,7 +26,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.utils.protocol.Protocol
 import dev.ilgax.utils.core.action.AndroidRequirementEnv
 import dev.ilgax.utils.core.action.RequirementChecker
 import dev.ilgax.utils.core.action.RequirementFix

@@ -5,8 +5,8 @@ import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
 import android.os.ParcelUuid
-import dev.ilgax.tabremote.protocol.Advertisement
-import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.utils.protocol.Advertisement
+import dev.ilgax.utils.protocol.Protocol
 
 /**
  * Advertisement size: flags (3) + 128-bit service UUID (2+16) + manufacturer data (2+2+5) = 30 bytes,

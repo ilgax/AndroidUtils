@@ -1,11 +1,11 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.CommandFrame
-import dev.ilgax.tabremote.protocol.Hmac
-import dev.ilgax.tabremote.protocol.SpeakerCodec
-import dev.ilgax.tabremote.protocol.SpeakerOp
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.CommandFrame
+import dev.ilgax.utils.protocol.Hmac
+import dev.ilgax.utils.protocol.SpeakerCodec
+import dev.ilgax.utils.protocol.SpeakerOp
+import dev.ilgax.utils.protocol.Status
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

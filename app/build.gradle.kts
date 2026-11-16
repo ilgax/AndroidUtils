@@ -41,7 +41,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // Bundled ONNX models (feature-math) must stay uncompressed in the APK.
+    // Bundled ONNX models (:math) must stay uncompressed in the APK.
     androidResources.noCompress += "onnx"
 
     testOptions.unitTests {
@@ -61,10 +61,10 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation(project(":core"))
-    implementation(project(":feature-speaker"))
-    implementation(project(":feature-hotspot"))
-    implementation(project(":feature-remote"))
-    implementation(project(":feature-math"))
+    implementation(project(":speaker"))
+    implementation(project(":hotspot"))
+    implementation(project(":remote"))
+    implementation(project(":math"))
 
     debugImplementation(libs.compose.ui.test.manifest)
 

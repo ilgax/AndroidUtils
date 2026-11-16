@@ -40,10 +40,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.IntegrityVerdict
-import dev.ilgax.tabremote.protocol.Protocol
-import dev.ilgax.tabremote.protocol.RetryPolicy
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.IntegrityVerdict
+import dev.ilgax.utils.protocol.Protocol
+import dev.ilgax.utils.protocol.RetryPolicy
 import dev.ilgax.utils.core.CardMode
 import dev.ilgax.utils.core.R as CoreR
 import dev.ilgax.utils.core.asString

@@ -40,5 +40,5 @@ object AppCatalog {
     }
 
     fun slotLabels(context: Context, prefs: RemotePrefs): List<String?> =
-        List(dev.ilgax.tabremote.protocol.Protocol.APP_SLOTS) { label(context, prefs.slot(it)) }
+        List(dev.ilgax.utils.protocol.Protocol.APP_SLOTS) { label(context, prefs.slot(it)) }
 }

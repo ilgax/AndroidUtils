@@ -1,7 +1,7 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.IntegrityVerdict
-import dev.ilgax.tabremote.protocol.UpdateReport
+import dev.ilgax.utils.protocol.IntegrityVerdict
+import dev.ilgax.utils.protocol.UpdateReport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

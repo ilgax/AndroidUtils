@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.ilgax.tabremote.wear"
+    namespace = "dev.ilgax.utils.wear"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.ilgax.tabremote.wear"
+        applicationId = "dev.ilgax.utils.wear"
         minSdk = 31
         targetSdk = 35
         versionCode = 7

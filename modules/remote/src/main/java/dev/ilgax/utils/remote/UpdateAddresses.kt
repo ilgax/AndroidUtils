@@ -1,6 +1,6 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.OfferFrame
+import dev.ilgax.utils.protocol.OfferFrame
 import java.net.Inet4Address
 import java.net.NetworkInterface
 

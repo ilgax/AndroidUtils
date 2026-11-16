@@ -12,16 +12,16 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
-import dev.ilgax.tabremote.protocol.AppSlots
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.CommandFrame
-import dev.ilgax.tabremote.protocol.MacroList
+import dev.ilgax.utils.protocol.AppSlots
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.CommandFrame
+import dev.ilgax.utils.protocol.MacroList
 import dev.ilgax.utils.remote.macros.MacroEngine
-import dev.ilgax.tabremote.protocol.IntegrityFrame
-import dev.ilgax.tabremote.protocol.OfferFrame
-import dev.ilgax.tabremote.protocol.Protocol
-import dev.ilgax.tabremote.protocol.SpeakerCodec
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.IntegrityFrame
+import dev.ilgax.utils.protocol.OfferFrame
+import dev.ilgax.utils.protocol.Protocol
+import dev.ilgax.utils.protocol.SpeakerCodec
+import dev.ilgax.utils.protocol.Status
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
 
@@ -422,7 +422,8 @@ class GattController(
         pairing.tryCommit(nonce, frame) { key ->
             vault.save(key)
             prefs.paired = true
-            prefs.watchVersion = -1 // a new pairing may be a different watch
+            // A new pairing replaces the old one and may be a different watch (or app): drop its update state.
+            UpdateHost.get(context).forgetWatch()
         }?.let { return it }
 
         if (!vault.has()) return Status.AUTH_FAILED

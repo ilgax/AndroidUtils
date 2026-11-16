@@ -1,8 +1,8 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.IntegrityVerdict
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.IntegrityVerdict
+import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.remote.macros.MacroUi
 import dev.ilgax.utils.remote.macros.RunRecord
 import dev.ilgax.utils.remote.macros.RunningMacro
@@ -41,7 +41,7 @@ data class RemoteUiState(
     val checks: SetupChecks,
     val paired: Boolean,
     val pairing: RemoteState.PairingUi = RemoteState.PairingUi.Off,
-    /** Always [dev.ilgax.tabremote.protocol.Protocol.APP_SLOTS] entries; null = empty slot. */
+    /** Always [dev.ilgax.utils.protocol.Protocol.APP_SLOTS] entries; null = empty slot. */
     val slots: List<SlotUi?>,
     /** True when Shizuku is ready, i.e. closing apps will force-stop them. */
     val forceStop: Boolean,
@@ -115,13 +115,13 @@ internal fun WatchAppUi.statusRes(): Int = when (val u = update) {
     WatchUpdateState.Installing -> R.string.remote_app_st_installing
     WatchUpdateState.TimedOut -> R.string.remote_app_st_timed_out
     is WatchUpdateState.Failed -> when (u.failure) {
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.NO_WIFI -> R.string.remote_app_st_no_wifi
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.DOWNLOAD -> R.string.remote_app_st_download
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.HASH_MISMATCH -> R.string.remote_app_st_hash
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.INSTALL_BLOCKED -> R.string.remote_app_st_blocked
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.INSTALL_FAILED -> R.string.remote_app_st_install_failed
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.CERT_MISMATCH -> R.string.remote_app_st_cert
-        dev.ilgax.tabremote.protocol.UpdateReport.Failure.UNKNOWN -> R.string.remote_app_st_failed
+        dev.ilgax.utils.protocol.UpdateReport.Failure.NO_WIFI -> R.string.remote_app_st_no_wifi
+        dev.ilgax.utils.protocol.UpdateReport.Failure.DOWNLOAD -> R.string.remote_app_st_download
+        dev.ilgax.utils.protocol.UpdateReport.Failure.HASH_MISMATCH -> R.string.remote_app_st_hash
+        dev.ilgax.utils.protocol.UpdateReport.Failure.INSTALL_BLOCKED -> R.string.remote_app_st_blocked
+        dev.ilgax.utils.protocol.UpdateReport.Failure.INSTALL_FAILED -> R.string.remote_app_st_install_failed
+        dev.ilgax.utils.protocol.UpdateReport.Failure.CERT_MISMATCH -> R.string.remote_app_st_cert
+        dev.ilgax.utils.protocol.UpdateReport.Failure.UNKNOWN -> R.string.remote_app_st_failed
     }
 }
 

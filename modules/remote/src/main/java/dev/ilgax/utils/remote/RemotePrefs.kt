@@ -1,7 +1,7 @@
 package dev.ilgax.utils.remote
 
 import android.content.Context
-import dev.ilgax.tabremote.protocol.Protocol
+import dev.ilgax.utils.protocol.Protocol
 import java.security.SecureRandom
 
 class RemotePrefs(context: Context) {

@@ -6,7 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.PackageManager
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.core.action.ActionRegistry
 import dev.ilgax.utils.remote.R
 import dev.ilgax.utils.remote.RemoteService
@@ -17,7 +17,7 @@ import java.io.File
 
 /**
  * Process-wide macros: the store, the run history and the runner, plus the two entry points (the watch's RUN_MACRO and
- * the local Run button). Lives in :feature-remote because the watch remote is the only thing that triggers macros; the
+ * the local Run button). Lives in :remote because the watch remote is the only thing that triggers macros; the
  * steps themselves come from the [ActionRegistry], so this module does not know the hotspot or speaker modules.
  */
 class MacroEngine private constructor(context: Context) {

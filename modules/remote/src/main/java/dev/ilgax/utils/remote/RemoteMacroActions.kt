@@ -1,9 +1,9 @@
 package dev.ilgax.utils.remote
 
 import android.content.Context
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.Protocol
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.Protocol
+import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.core.UiText
 import dev.ilgax.utils.core.action.ActionGroup
 import dev.ilgax.utils.core.action.ActionProvider

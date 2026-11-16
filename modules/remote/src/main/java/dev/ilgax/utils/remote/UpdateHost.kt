@@ -2,12 +2,12 @@ package dev.ilgax.utils.remote
 
 import android.annotation.SuppressLint
 import android.content.Context
-import dev.ilgax.tabremote.protocol.ExpectedBuild
-import dev.ilgax.tabremote.protocol.IntegrityReport
-import dev.ilgax.tabremote.protocol.IntegrityVerdict
-import dev.ilgax.tabremote.protocol.UpdateOffer
-import dev.ilgax.tabremote.protocol.UpdateReport
-import dev.ilgax.tabremote.protocol.WatchIntegrity
+import dev.ilgax.utils.protocol.ExpectedBuild
+import dev.ilgax.utils.protocol.IntegrityReport
+import dev.ilgax.utils.protocol.IntegrityVerdict
+import dev.ilgax.utils.protocol.UpdateOffer
+import dev.ilgax.utils.protocol.UpdateReport
+import dev.ilgax.utils.protocol.WatchIntegrity
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -111,6 +111,17 @@ class UpdateHost private constructor(context: Context) {
 
     fun clearWatchVersion() {
         prefs.watchVersion = -1
+        RemoteState.poke()
+    }
+
+    /** Forgets everything known about the previous watch (a new pairing, or an unpair): offer, report, versions. */
+    @Synchronized
+    fun forgetWatch() {
+        stopLocked()
+        prefs.watchVersion = -1
+        prefs.watchUpdatedTo = -1
+        integrity = null
+        verifyAskedAt = 0L
         RemoteState.poke()
     }
 

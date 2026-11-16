@@ -1,7 +1,7 @@
 package dev.ilgax.utils.remote.macros
 
-import dev.ilgax.tabremote.protocol.MacroItem
-import dev.ilgax.tabremote.protocol.MacroList
+import dev.ilgax.utils.protocol.MacroItem
+import dev.ilgax.utils.protocol.MacroList
 import dev.ilgax.utils.core.action.ActionRegistry
 import dev.ilgax.utils.core.action.ParamValues
 

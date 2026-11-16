@@ -2,12 +2,12 @@ package dev.ilgax.utils.remote
 
 import android.os.Handler
 import android.os.Looper
-import dev.ilgax.tabremote.protocol.Command
-import dev.ilgax.tabremote.protocol.CommandFrame
-import dev.ilgax.tabremote.protocol.Hmac
-import dev.ilgax.tabremote.protocol.Pairing
-import dev.ilgax.tabremote.protocol.Protocol
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.CommandFrame
+import dev.ilgax.utils.protocol.Hmac
+import dev.ilgax.utils.protocol.Pairing
+import dev.ilgax.utils.protocol.Protocol
+import dev.ilgax.utils.protocol.Status
 
 /** Tablet side of pairing. The candidate key is held in memory only until it is committed. */
 class PairingSession(private val onModeChanged: () -> Unit) {

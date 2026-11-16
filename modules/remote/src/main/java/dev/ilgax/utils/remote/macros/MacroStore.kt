@@ -1,7 +1,7 @@
 package dev.ilgax.utils.remote.macros
 
-import dev.ilgax.tabremote.protocol.MacroItem
-import dev.ilgax.tabremote.protocol.MacroList
+import dev.ilgax.utils.protocol.MacroItem
+import dev.ilgax.utils.protocol.MacroList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

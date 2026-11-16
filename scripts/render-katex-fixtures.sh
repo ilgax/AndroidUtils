@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Renders build/katex-fixtures/*.json (written by KatexFixtureDump) with the bundled KaTeX page in headless
 # Chrome and stores transparent PNGs in app/src/test/resources/katex/ for the Roborazzi screenshots.
-# Usage: scripts/render-katex-fixtures.sh   (after ./gradlew :feature-math:testDebugUnitTest)
+# Usage: scripts/render-katex-fixtures.sh   (after ./gradlew :math:testDebugUnitTest)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 src="$root/modules/math/build/katex-fixtures"

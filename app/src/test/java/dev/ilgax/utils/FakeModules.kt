@@ -17,7 +17,7 @@ import dev.ilgax.utils.math.MathScreen
 import dev.ilgax.utils.math.MathUiState
 import dev.ilgax.utils.math.ModelRow
 import dev.ilgax.utils.math.normalize.DotMeaning
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.remote.PairingPanel
 import dev.ilgax.utils.remote.PairingStep
 import dev.ilgax.utils.remote.RemoteActions

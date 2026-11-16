@@ -1,6 +1,6 @@
 package dev.ilgax.utils.remote
 
-import dev.ilgax.tabremote.protocol.Status
+import dev.ilgax.utils.protocol.Status
 import dev.ilgax.utils.core.CardMode
 import dev.ilgax.utils.remote.RemoteState.Service
 import org.junit.Assert.assertEquals
