@@ -77,6 +77,16 @@ internal class SolveSession(private val target: Char?, private val angles: Angle
                 SolveResult.Failed("the numeric check of the answer disagreed (${u.why}), so no answer is shown", "Can't solve this limit reliably")
             }
         }
+        if (SequenceSolver.applies(latex)) {
+            return try { SequenceSolver(this).solve(latex) } catch (u: SeqUnreliable) {
+                SolveResult.Failed("the numeric check of the answer disagreed (${u.why}), so no answer is shown", "Can't solve this sequence reliably")
+            }
+        }
+        if (latex.contains("\\sum")) {
+            return try { SumSolver(this).solve(latex) } catch (u: SumUnreliable) {
+                SolveResult.Failed("the numeric check of the answer disagreed (${u.why}), so no answer is shown", "Can't solve this sum reliably")
+            }
+        }
         if (DerivativeSolver.applies(latex)) DerivativeSolver(this, angles).solve(latex)?.let { return it }
         val parsed = LatexParser.parse(latex, target, angles)
         val rewrites = LogRewrites(this)

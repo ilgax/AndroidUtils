@@ -11,7 +11,7 @@ internal object LatexSanity {
     private val known = setOf(
         "frac", "sqrt", "ln", "log", "cdot", "ge", "le", "ne", "in", "cup", "cap", "infty", "varnothing", "mathbb", "text",
         "pm", "approx", "pi", "left", "right", "begin", "end", "hline", "times", "sin", "cos", "tan", "cot", "sec", "csc",
-        "arcsin", "arccos", "arctan", "circ", "to", "lim", "Rightarrow", "quad", "ne", "lvert", "rvert", "exp",
+        "arcsin", "arccos", "arctan", "circ", "to", "lim", "Rightarrow", "quad", "ne", "lvert", "rvert", "exp", "sum", "cdots", "ldots",
     )
 
     fun problems(tex: String): List<String> {
