@@ -78,15 +78,32 @@ internal class SolveSession(private val target: Char?, private val angles: Angle
             }
         }
         if (DerivativeSolver.applies(latex)) DerivativeSolver(this, angles).solve(latex)?.let { return it }
-        val lines = LatexParser.parse(latex, target, angles)
+        val parsed = LatexParser.parse(latex, target, angles)
+        val rewrites = LogRewrites(this)
+        val lines = rewrites.apply(parsed)
         val nodes = lines.flatMap { it.parts }
+        // log_a b · log_b c = log_a c: a symbolic result is shown as it is
+        if (lines.size == 1 && lines[0].parts.size == 1 && rewrites.chained && nodes[0].hasLogVar()) {
+            note("Valid where every base is positive and not 1, and every argument is positive")
+            val tex = NodeTex.tex(nodes[0])
+            return SolveResult.Solved(listOf(Answer(tex, plainOf(tex))), steps, notes)
+        }
+        if (rewrites.restrictions.isNotEmpty() && lines.size == 1 && lines[0].isEquation && lines[0].parts.size == 2) {
+            if (lines[0].parts.none { it.hasVariable() }) return LogIdentity(this).solve(lines[0], rewrites.restrictions)
+            throw UnsupportedMath("a product of logarithms whose unknown base or argument cancels, next to other terms")
+        }
         val trigVar = nodes.any { it.hasTrigVar() }
         val absVar = nodes.any { it.hasAbsVar() }
         if (trigVar && absVar) throw UnsupportedMath("absolute values together with trigonometric functions")
+        if (nodes.any { it.hasUnknownBase() }) {
+            if (lines.any { it.isInequality }) throw UnsupportedMath("an inequality with a logarithm of an unknown base")
+            return UnknownBaseSolver(this, Evaluator(atoms)).solve(lines[0].also { if (lines.size > 1) throw UnsupportedMath("several equations with a logarithm of an unknown base") })
+        }
         if (lines.any { it.isInequality }) {
             if (lines.size > 1) throw UnsupportedMath("several inequalities at once")
             if (trigVar) throw UnsupportedMath("trigonometric functions inside an inequality")
             if (absVar) return AbsSolver(this).inequality(lines[0])
+            if (nodes.any { it.hasLogVar() }) return LogInequality(this, parsed[0]).solve(lines[0])
             return Inequalities(this).solve(lines[0])
         }
         if (absVar) {
@@ -117,7 +134,7 @@ internal class SolveSession(private val target: Char?, private val angles: Angle
         }
         if (!atoms.isEmpty) {
             if (eqs.size > 1) throw UnsupportedMath("a system that contains roots, logarithms or powers with an unknown exponent")
-            return AtomSolver(this, ev, eqLines[0].parts[0], eqLines[0].parts[1], eqs[0]).solve()
+            return AtomSolver(this, ev, parsed[lines.indexOf(eqLines[0])].parts[0], parsed[lines.indexOf(eqLines[0])].parts[1], eqs[0]).solve()
         }
         return try { solveEquations(eqs) } catch (c: Contradiction) {
             step("", "The equations contradict each other")

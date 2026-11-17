@@ -26,6 +26,8 @@ class KatexFixtureDump {
             // inequality with its sign chart, and a log equation with a rejected root
             "inequality" to content("\\frac{x-1}{x+2}\\ge 0", true),
             "log" to content("\\log x+\\log(x-3)=1", true),
+            // 0.9.2: a logarithmic inequality (domain, product rule, sign chart, intersection)
+            "loginequality" to content("\\log x+\\log(x-3)\\le1", true),
             // 0.5.0: a trigonometric equation (period solutions + general solution) and an absolute-value equation with cases
             "trig" to content("\\sin(2x)=\\frac{\\sqrt3}{2}", true),
             "abs" to content("|x-1|+|x+2|=5", true),

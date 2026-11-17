@@ -20,6 +20,10 @@ internal class AtomSolver(
     private val atoms = s.atoms
     private fun step(latex: String, caption: String) = s.step(latex, caption)
 
+    /** For callers that only want the boundary points (inequalities): no solution is not a failure, and the roots are kept. */
+    var emptyOk = false
+    var found: List<Val>? = null
+
     fun solve(): SolveResult {
         val stepMark = s.steps.size
         val noteMark = s.notes.size
@@ -28,7 +32,9 @@ internal class AtomSolver(
         } catch (e: NeedsNumeric) {
             while (s.steps.size > stepMark) s.steps.removeAt(s.steps.size - 1)
             while (s.notes.size > noteMark) s.notes.removeAt(s.notes.size - 1)
-            return NumericSearch(s, lNode, rNode, e.message ?: "this mix of terms").solve()
+            val search = NumericSearch(s, lNode, rNode, e.message ?: "this mix of terms")
+            search.emptyOk = emptyOk
+            return search.solve().also { found = search.boundary }
         }
     }
 
@@ -112,8 +118,9 @@ internal class AtomSolver(
     }
 
     private fun finish(v: Char, cands: List<Val>): SolveResult {
-        if (cands.isEmpty()) return noSolution()
+        if (cands.isEmpty()) return noSolution().also { found = emptyList() }
         val kept = verify(cands, v)
+        found = kept
         if (kept.isEmpty()) return noSolution()
         if (kept.any { it.isApprox }) s.note("Decimal answers are approximate")
         return SolveResult.Solved(listOf(s.rootsAnswer(v, kept.sortedBy { it.d })), s.steps, s.notes)
@@ -555,6 +562,9 @@ internal class NumericSearch(
     private val rNode: Node,
     private val reason: String,
 ) {
+    var emptyOk = false
+    var boundary: List<Val>? = null
+
     fun solve(): SolveResult {
         val vars = lNode.variableNames() + rNode.variableNames()
         if (vars.size != 1) throw UnsupportedMath(reason)
@@ -602,8 +612,14 @@ internal class NumericSearch(
             prevF = cf
         }
         val roots = found.sorted().fold(ArrayList<Double>()) { acc, d -> if (acc.isEmpty() || Math.abs(acc.last() - d) > 1e-7) acc += d; acc }
-        if (roots.isEmpty()) throw UnsupportedMath("$reason (a numeric search between -1000 and 1000 found no solution either)")
+        if (roots.isEmpty()) {
+            if (!emptyOk) throw UnsupportedMath("$reason (a numeric search between -1000 and 1000 found no solution either)")
+            boundary = emptyList()
+            s.step("\\text{no boundary point}", "No exact method for this mix; a numeric search between -1000 and 1000 found no boundary point")
+            return SolveResult.Solved(listOf(Answer("\\text{No solution}", "No solution")), s.steps, s.notes)
+        }
         val vals = roots.map { Val.approx(it) }
+        boundary = vals
         s.step(vals.joinToString(",\\ ") { "$v\\approx${Printer.num(it.d, 4)}" }, "No exact method for this mix; approximate (numeric search)")
         s.note("Approximate: found by scanning −1000…1000 for sign changes; a root that only touches zero would be missed")
         return SolveResult.Solved(listOf(s.rootsAnswer(v, vals)), s.steps, s.notes)

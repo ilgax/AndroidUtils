@@ -65,5 +65,5 @@ class LogarithmTest {
         val r = solved("\\log_2 32-\\log_2 4")
         assertEquals("5-2", r.steps.first { it.caption == "Evaluate each logarithm" }.latex)
     }
-    @Test fun unknownBaseIsUnsupported() = assertTrue(failedReason("\\log_x 8=3").contains("unknown base"))
+    @Test fun unknownBaseNeedsASingleEquation() = assertTrue(failedReason("\\log_x 8").contains("unknown base"))
 }

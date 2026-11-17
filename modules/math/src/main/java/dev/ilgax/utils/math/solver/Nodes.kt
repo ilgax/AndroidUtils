@@ -197,6 +197,7 @@ internal object NodeNum {
             if (a <= 0) throw Undefined("log(${plain(n.arg)}) needs ${plain(n.arg)} > 0, but it is ${fmt(a)}")
             if (n.name == "ln") Math.log(a) else {
                 val b = eval(n.base!!, env)
+                if (b <= 0 || Math.abs(b - 1) < 1e-12) throw Undefined("the base of log(${plain(n.arg)}) must be positive and not 1, but it is ${fmt(b)}")
                 Math.log(a) / Math.log(b)
             }
         }
@@ -242,6 +243,7 @@ internal object NodeExact {
             val a = eval(n.arg, env)
             if (a.signum() <= 0) throw Undefined("log(${plain(n.arg)}) needs ${plain(n.arg)} > 0, but it is ${shown(a)}")
             val base = if (n.name == "ln") Surd.E_SURD else eval(n.base!!, env)
+            if (base.signum() <= 0 || base == Surd.ONE) throw Undefined("the base of log(${plain(n.arg)}) must be positive and not 1, but it is ${shown(base)}")
             Surd.of(NumberTheory.exactLog(base, a) ?: throw NotExact())
         }
     }

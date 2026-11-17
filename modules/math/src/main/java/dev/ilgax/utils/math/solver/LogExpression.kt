@@ -17,19 +17,20 @@ internal class LogExpression(private val s: SolveSession, private val ev: Evalua
         val p = raw.num.divBy(raw.den.constant)
         if (p.variables.userVars.isNotEmpty()) throw UnsupportedMath("an expression that mixes the unknown with roots, logarithms or powers")
         var constant = p.constant
-        val byBase = LinkedHashMap<Surd, MutableList<Pair<Atom.Log, Surd>>>()
+        val byBase = LinkedHashMap<Surd, MutableList<Pair<Surd, Surd>>>()
         for ((m, c) in p.terms) {
             if (m.isConstant) continue
             val only = m.powers.entries.singleOrNull()
             val atom = only?.takeIf { it.value == 1 }?.let { s.atoms[it.key] } as? Atom.Log
                 ?: throw UnsupportedMath("products or powers of logarithms")
-            byBase.getOrPut(atom.base) { ArrayList() } += atom to c
+            val (arg, coef) = rootIntoArgument(ev.constantOf(atom.arg)!!, c)
+            byBase.getOrPut(atom.base) { ArrayList() } += arg to coef
         }
         val parts = ArrayList<Pair<String, Double>>()
         for ((b, items) in byBase) {
-            val args = items.map { ev.constantOf(it.first.arg)!! }
+            val args = items.map { it.first }
             if (items.size == 1) {
-                val (atom, c) = items[0]
+                val c = items[0].second
                 parts += termText(c, logTex(b, Printer.surd(args[0]))) to c.toDouble() * Math.log(args[0].toDouble()) / Math.log(b.toDouble())
                 continue
             }
@@ -71,6 +72,18 @@ internal class LogExpression(private val s: SolveSession, private val ev: Evalua
         val d = constant.toDouble() + parts.sumOf { it.second }
         val tex = sb.toString() + "\\approx" + Printer.num(d, 3)
         return SolveResult.Solved(listOf(Answer(tex, plainOf(tex))), s.steps, s.notes)
+    }
+
+    /**
+     * A rational coefficient that takes a root of the argument moves into it when the result is a nicer number:
+     * ½·log_2 9 = log_2 3. Other coefficients stay.
+     */
+    private fun rootIntoArgument(arg: Surd, c: Surd): Pair<Surd, Surd> {
+        if (!c.isRational || c.rational.isInteger || !arg.isRational) return arg to c
+        val w = NumberTheory.exactPow(arg, c.rational.abs())?.takeIf { it.isRational && it.signum() > 0 } ?: return arg to c
+        fun size(q: Rational) = q.num.bitLength() + q.den.bitLength()
+        if (size(w.rational) >= size(arg.rational)) return arg to c
+        return w to (if (c.signum() < 0) -Surd.ONE else Surd.ONE)
     }
 
     private fun termText(c: Surd, log: String): String = when {

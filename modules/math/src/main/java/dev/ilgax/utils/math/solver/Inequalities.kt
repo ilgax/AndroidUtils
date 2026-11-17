@@ -62,9 +62,24 @@ internal class Inequalities(private val s: SolveSession) {
         if (line.ops.any { it == "=" }) throw UnsupportedMath("an equation mixed into an inequality")
         val ev = Evaluator(s.atoms)
         val vals = line.parts.map { ev.eval(it) }
-        if (!s.atoms.isEmpty) throw UnsupportedMath("an inequality with roots, logarithms or powers of the unknown")
+        if (!s.atoms.isEmpty) {
+            if (s.atoms.list.any { !it.isConstant } || vals.any { it.variables.userVars.isNotEmpty() }) throw UnsupportedMath("an inequality with roots, logarithms or powers of the unknown")
+            return constantStatement(line)
+        }
         if (line.ops.size == 1) return single(vals[0], line.ops[0], vals[1], line.sources[0], line.sources[1])
         return chain(line, vals)
+    }
+
+    /** Both sides are numbers that aren't exact (log_2 5 vs log_3 7): compare them numerically. */
+    private fun constantStatement(line: ParsedLine): SolveResult {
+        if (line.ops.size != 1) throw UnsupportedMath("a chained inequality with logarithms of plain numbers")
+        val a = NodeNum.eval(line.parts[0], emptyMap())
+        val b = NodeNum.eval(line.parts[1], emptyMap())
+        if (Math.abs(a - b) <= 1e-9 * Math.max(1.0, Math.max(Math.abs(a), Math.abs(b)))) throw UnsupportedMath("a comparison of two numbers that are too close to tell apart numerically")
+        val op = line.ops[0]
+        step("${Printer.num(a, 4)}${opTex(op)}${Printer.num(b, 4)}", "No unknown: compare the decimal values")
+        val ok = when (op) { "<", "<=" -> a < b; else -> a > b }
+        return SolveResult.Solved(listOf(if (ok) Answer("\\text{True}", "True") else Answer("\\text{False}", "False")), s.steps, s.notes)
     }
 
     // ---------------------------------------------------------------- helpers

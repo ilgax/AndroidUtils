@@ -337,7 +337,7 @@ object LatexParser {
                 isCmd(t, "\\lg") -> Node.Func("log", Node.Number(Rational.of(10)), funcArg())
                 isCmd(t, "\\log") -> {
                     val base = if (isOp(peek(), "_")) { pos++; subscript() } else Node.Number(Rational.of(10))
-                    Node.Func("log", base, funcArg())
+                    if (base is Node.Const && base.symbol == 'e') Node.Func("ln", null, funcArg()) else Node.Func("log", base, funcArg())
                 }
                 isCmd(t, "\\exp") -> Node.Power(Node.Const('e'), funcArg())
                 isOp(t, "(") -> { val n = expr(); if (!isOp(peek(), ")")) throw UnsupportedMath("an unclosed parenthesis"); pos++; n }
@@ -485,7 +485,7 @@ internal class Evaluator(val atoms: AtomTable = AtomTable()) {
             val b = eval(n.base!!)
             constantOf(b) ?: throw UnsupportedMath("a logarithm with an unknown base")
         }
-        if (base.signum() <= 0 || base == Surd.ONE) throw UnsupportedMath("a logarithm whose base is not positive or is 1")
+        if (base.signum() <= 0 || base == Surd.ONE) throw SolveFailure("the base of a logarithm must be positive and not 1")
         if (a.variables.isEmpty()) {
             val value = constantOf(a)!!
             if (value.signum() <= 0) throw UnsupportedMath("the logarithm of a number that is not positive")
