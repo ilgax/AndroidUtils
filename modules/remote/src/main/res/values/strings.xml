@@ -228,4 +228,19 @@
     <string name="macro_channel_name">Macro failures</string>
     <string name="macro_failed_title">Macro \"%1$s\" failed</string>
     <string name="macro_failed_text">Step %1$d (%2$s): %3$s</string>
+
+    <string name="remote_np_listener_label">Utils media control</string>
+    <string name="remote_group_media">Media control</string>
+    <string name="remote_media_label">Now playing on the watch</string>
+    <string name="remote_media_granted">Notification access granted</string>
+    <string name="remote_media_missing">Needs notification access to see what is playing. Utils does not read your notifications.</string>
+    <string name="remote_media_hint_shizuku">With Shizuku ready this is granted automatically.</string>
+    <string name="remote_media_hint_restricted">If Android says the setting is restricted, open the Utils app info, tap the three dots and Allow restricted settings, then try again.</string>
+    <string name="remote_btn_grant_media">Grant notification access</string>
+    <string name="remote_media_grant_failed">Shizuku could not grant it, opening settings.</string>
+    <string name="remote_test_next">Next</string>
+    <string name="remote_test_previous">Previous</string>
+    <string name="remote_test_seek_back">Back 10 s</string>
+    <string name="remote_test_seek_fwd">Forward 30 s</string>
+    <string name="remote_res_not_available">Nothing seekable is playing</string>
 </resources>

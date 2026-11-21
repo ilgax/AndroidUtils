@@ -30,6 +30,8 @@ enum class Status(val code: Int) {
     UPDATE_GONE(0x9D),
     /** UPDATE_DATA: another watch is being served right now. */
     UPDATE_BUSY(0x9E),
+    /** SEEK: nothing seekable is playing (no media session, or the session does not allow seeking). */
+    NOT_AVAILABLE(0x9F),
     UNKNOWN(-1);
 
     companion object {

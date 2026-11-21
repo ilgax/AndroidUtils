@@ -44,6 +44,7 @@ import androidx.core.graphics.drawable.toBitmap
 import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.IntegrityVerdict
 import dev.ilgax.utils.protocol.Protocol
+import dev.ilgax.utils.protocol.Transport
 import dev.ilgax.utils.protocol.RetryPolicy
 import dev.ilgax.utils.core.CardMode
 import dev.ilgax.utils.core.R as CoreR
@@ -123,6 +124,8 @@ fun RemoteScreen(
             }
         }
 
+        MediaGroup(state.mediaAccess, state.shizukuReady, actions.onGrantMediaAccess)
+
         state.watchApp?.let { WatchAppGroup(it, state.paired, actions) }
 
         SlotsGroup(state.slots, actions)
@@ -153,6 +156,10 @@ fun RemoteScreen(
                 }
                 TestButton(R.string.remote_test_lock) { run(Command.LOCK) }
                 TestButton(R.string.remote_test_play_pause) { run(Command.PLAY_PAUSE) }
+                TestButton(R.string.remote_test_previous) { run(Command.PREVIOUS) }
+                TestButton(R.string.remote_test_next) { run(Command.NEXT) }
+                TestButton(R.string.remote_test_seek_back) { run(Command.SEEK, Transport.encodeSeek(-10)) }
+                TestButton(R.string.remote_test_seek_fwd) { run(Command.SEEK, Transport.encodeSeek(30)) }
                 TestButton(R.string.remote_test_vol_up) { run(Command.VOLUME_UP) }
                 TestButton(R.string.remote_test_vol_down) { run(Command.VOLUME_DOWN) }
                 TestButton(R.string.remote_test_ring) { run(Command.RING) }
@@ -192,6 +199,34 @@ fun RemoteScreen(
                 TextButton(onClick = { confirmUnpair = false }) { Text(stringResource(R.string.remote_btn_cancel)) }
             },
         )
+    }
+}
+
+/** Notification access for the watch's Now playing: a status row, and the manual grant when it is missing. */
+@Composable
+private fun MediaGroup(granted: Boolean, shizukuReady: Boolean, onGrant: () -> Unit) {
+    SettingsGroup(title = stringResource(R.string.remote_group_media)) {
+        SettingsRow(
+            label = stringResource(R.string.remote_media_label),
+            iconRes = R.drawable.ic_watch,
+            trailing = {
+                if (!granted) TextButton(onClick = onGrant) { Text(stringResource(R.string.remote_btn_grant_media)) }
+            },
+        ) {
+            Column {
+                Text(
+                    stringResource(if (granted) R.string.remote_media_granted else R.string.remote_media_missing),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                if (!granted) {
+                    Text(
+                        stringResource(if (shizukuReady) R.string.remote_media_hint_shizuku else R.string.remote_media_hint_restricted),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

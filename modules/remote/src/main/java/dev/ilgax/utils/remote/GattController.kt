@@ -17,6 +17,8 @@ import dev.ilgax.utils.protocol.AppSlots
 import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.CommandFrame
 import dev.ilgax.utils.protocol.MacroList
+import dev.ilgax.utils.protocol.NowArt
+import dev.ilgax.utils.protocol.NowPlayingFrame
 import dev.ilgax.utils.remote.macros.MacroEngine
 import dev.ilgax.utils.protocol.IntegrityFrame
 import dev.ilgax.utils.protocol.OfferFrame
@@ -58,6 +60,15 @@ class GattController(
     private class MacroGrant(val nonce: ByteArray, val page: Int)
     private val macroGrants = HashMap<String, MacroGrant>()
     private val macroSnapshots = HashMap<String, ByteArray>()
+    /** GET_NOW_PLAYING grants: one authenticated read of NOW_PLAYING, bound to the granting frame's nonce. */
+    private val nowGrants = HashMap<String, ByteArray>()
+    private val nowSnapshots = HashMap<String, ByteArray>()
+    /** GET_ART grants: one authenticated read of NOW_ART for the page asked, bound to the granting frame's nonce. */
+    private val artGrants = HashMap<String, MacroGrant>()
+    private val artSnapshots = HashMap<String, ByteArray>()
+    private var nowChar: BluetoothGattCharacteristic? = null
+    /** Watches subscribed to NOW_PLAYING pings; the media sessions are only watched while there is one. */
+    private val nowSubscribers = HashSet<String>()
     private var offerChar: BluetoothGattCharacteristic? = null
     private var dataChar: BluetoothGattCharacteristic? = null
     /** Watches subscribed to UPDATE_DATA notifications; a window is only served to one of them. */
@@ -92,8 +103,38 @@ class GattController(
             appsGrants.clear(); appsSnapshots.clear()
             offerGrants.clear(); offerSnapshots.clear(); offerSubscribers.clear()
             macroGrants.clear(); macroSnapshots.clear()
+            nowGrants.clear(); nowSnapshots.clear(); artGrants.clear(); artSnapshots.clear(); nowSubscribers.clear()
+            updateNowListening()
             dataSubscribers.clear(); dataWindows.clear(); dataInFlight.clear()
         }
+    }
+
+    /** Content-free ping to watches subscribed to NOW_PLAYING: "the state changed, ask for it". The state itself is never notified. */
+    fun notifyNowPlaying() {
+        handler.post {
+            val s = server ?: return@post
+            val ch = nowChar ?: return@post
+            for (addr in nowSubscribers.toList()) {
+                val device = devices[addr] ?: continue
+                try {
+                    s.notifyCharacteristicChanged(device, ch, false, byteArrayOf(Protocol.PING_NOW_PLAYING))
+                } catch (_: SecurityException) {
+                }
+            }
+        }
+    }
+
+    /** The media sessions are watched exactly while some watch is subscribed. */
+    private fun updateNowListening() {
+        val monitor = NowPlayingMonitor.get(context)
+        monitor.onChange = ::notifyNowPlaying
+        monitor.setListening(nowSubscribers.isNotEmpty())
+    }
+
+    private fun subscribersFor(uuid: java.util.UUID?): HashSet<String> = when (uuid) {
+        Protocol.UPDATE_DATA_UUID -> dataSubscribers
+        Protocol.NOW_PLAYING_UUID -> nowSubscribers
+        else -> offerSubscribers
     }
 
     /** Content-free ping to subscribed watches: "ask for the offer". The offer itself is never notified. */
@@ -177,6 +218,19 @@ class GattController(
         )
         svc.addCharacteristic(data)
         dataChar = data
+        val now = BluetoothGattCharacteristic(
+            Protocol.NOW_PLAYING_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            read,
+        )
+        now.addDescriptor(
+            BluetoothGattDescriptor(Protocol.CCCD_UUID, BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE),
+        )
+        svc.addCharacteristic(now)
+        nowChar = now
+        svc.addCharacteristic(
+            BluetoothGattCharacteristic(Protocol.NOW_ART_UUID, BluetoothGattCharacteristic.PROPERTY_READ, read),
+        )
         return svc
     }
 
@@ -196,6 +250,8 @@ class GattController(
                     pairBuffers.remove(addr); appsGrants.remove(addr); appsSnapshots.remove(addr)
                     offerGrants.remove(addr); offerSnapshots.remove(addr); offerSubscribers.remove(addr)
                     macroGrants.remove(addr); macroSnapshots.remove(addr)
+                    nowGrants.remove(addr); nowSnapshots.remove(addr); artGrants.remove(addr); artSnapshots.remove(addr)
+                    if (nowSubscribers.remove(addr)) updateNowListening()
                     dataSubscribers.remove(addr); dataWindows.remove(addr); dataInFlight.remove(addr)
                     UpdateHost.get(context).data.release(addr)
                     if (newState == BluetoothProfile.STATE_DISCONNECTED) onReady() // re-assert advertising
@@ -225,7 +281,7 @@ class GattController(
             device: BluetoothDevice, requestId: Int, offset: Int, descriptor: BluetoothGattDescriptor,
         ) {
             handler.post {
-                val subscribers = if (descriptor.characteristic?.uuid == Protocol.UPDATE_DATA_UUID) dataSubscribers else offerSubscribers
+                val subscribers = subscribersFor(descriptor.characteristic?.uuid)
                 val on = descriptor.uuid == Protocol.CCCD_UUID && device.address in subscribers
                 if (descriptor.uuid != Protocol.CCCD_UUID) {
                     respond(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
@@ -244,9 +300,10 @@ class GattController(
             handler.post {
                 val ok = descriptor.uuid == Protocol.CCCD_UUID && !preparedWrite && offset == 0 && data.size == 2
                 if (ok) {
-                    val subscribers = if (descriptor.characteristic?.uuid == Protocol.UPDATE_DATA_UUID) dataSubscribers else offerSubscribers
+                    val subscribers = subscribersFor(descriptor.characteristic?.uuid)
                     if (data.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) subscribers.add(device.address)
                     else subscribers.remove(device.address)
+                    if (subscribers === nowSubscribers) updateNowListening()
                 }
                 if (responseNeeded) {
                     respond(device, requestId, if (ok) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
@@ -341,8 +398,46 @@ class GattController(
                 val chunk = (mtus[addr] ?: DEFAULT_MTU) - 1
                 if (offset + chunk >= payload.size) macroSnapshots.remove(addr)
             }
+            Protocol.NOW_PLAYING_UUID -> readGranted(device, requestId, offset, nowSnapshots) {
+                nowGrants.remove(addr)?.let { nonce ->
+                    try {
+                        NowPlayingFrame.encode(mac(), nonce, NowPlayingMonitor.get(context).readForWatch())
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+            Protocol.NOW_ART_UUID -> readGranted(device, requestId, offset, artSnapshots) {
+                artGrants.remove(addr)?.let { grant ->
+                    try {
+                        NowArt.encodePage(mac(), grant.nonce, NowPlayingMonitor.get(context).art(), grant.page)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
             else -> respond(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
         }
+    }
+
+    private fun mac(): (ByteArray) -> ByteArray = { vault.mac(it) ?: throw IllegalStateException("no key") }
+
+    /**
+     * Serves a long read of a payload that exists only after an authenticated grant: the first read ([build] consumes the grant)
+     * builds it and keeps a snapshot for the follow-up reads of the same payload; without a grant the read fails.
+     */
+    private fun readGranted(
+        device: BluetoothDevice, requestId: Int, offset: Int, snapshots: HashMap<String, ByteArray>, build: () -> ByteArray?,
+    ) {
+        val addr = device.address
+        val payload: ByteArray? = if (offset == 0) build()?.also { snapshots[addr] = it } else snapshots[addr]
+        if (payload == null) {
+            respond(device, requestId, Status.AUTH_FAILED.code, offset, null)
+            return
+        }
+        respondSlice(device, requestId, offset, payload)
+        val chunk = (mtus[addr] ?: DEFAULT_MTU) - 1
+        if (offset + chunk >= payload.size) snapshots.remove(addr)
     }
 
     private fun respondSlice(device: BluetoothDevice, requestId: Int, offset: Int, full: ByteArray) {
@@ -556,6 +651,10 @@ class GattController(
                 if (r.command == Command.GET_OFFER && status == Status.SUCCESS) offerGrants[addr] = nonce
                 if (r.command == Command.SYNC_MACROS && status == Status.SUCCESS) {
                     MacroList.decodePageArgs(r.args)?.let { macroGrants[addr] = MacroGrant(nonce, it) }
+                }
+                if (r.command == Command.GET_NOW_PLAYING && status == Status.SUCCESS) nowGrants[addr] = nonce
+                if (r.command == Command.GET_ART && status == Status.SUCCESS) {
+                    NowArt.decodePageArgs(r.args)?.let { artGrants[addr] = MacroGrant(nonce, it) }
                 }
                 status
             }

@@ -67,14 +67,14 @@ class SpeakerTest {
 
     /** An old tablet does not know id 15, and a new one gets an id from the future: both end in a clean, specific error. */
     @Test fun unknownCommandsGetACleanError() {
-        val body = byteArrayOf(16, 0)
+        val body = byteArrayOf(99, 0)
         val tag = mac("cmd".toByteArray() + nonce + body).copyOf(Protocol.TAG_SIZE)
         val r = CommandFrame.verify(mac, nonce, body + tag) as CommandFrame.Result.Invalid
         assertEquals(Status.UNKNOWN_COMMAND, r.status)
         assertFalse(r.status == Status.AUTH_FAILED)
         // The watch side maps the status integer, including one it has never heard of, without throwing.
         assertEquals(Status.UNKNOWN_COMMAND, Status.fromStatus(0x06))
-        assertEquals(Status.UNKNOWN, Status.fromStatus(0x9F))
+        assertEquals(Status.UNKNOWN, Status.fromStatus(0xA0))
         assertTrue(SpeakerCodec.decodeReply(Status.fromStatus(0x9D)) == null)
     }
 }

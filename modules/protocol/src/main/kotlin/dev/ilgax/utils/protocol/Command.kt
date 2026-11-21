@@ -30,7 +30,16 @@ enum class Command(val id: Int) {
      * One arg byte: a [SpeakerOp] (0 query, 1 on, 2 off, 3 toggle). Answers with the resulting kill-switch state in the
      * response status ([SpeakerCodec.reply]); a tablet that predates this command answers [Status.UNKNOWN_COMMAND].
      */
-    SPEAKER(15);
+    SPEAKER(15),
+    /** Media: next / previous track. A tablet that predates them answers [Status.UNKNOWN_COMMAND]. */
+    NEXT(16),
+    PREVIOUS(17),
+    /** 2 arg bytes: signed seconds, big-endian ([Transport.encodeSeek]). [Status.NOT_AVAILABLE] when nothing seekable is playing. */
+    SEEK(18),
+    /** Grants one authenticated read of the NOW_PLAYING characteristic, bound to this frame's nonce. */
+    GET_NOW_PLAYING(19),
+    /** 2 arg bytes: page index, big-endian ([NowArt.encodePageArgs]). Grants one authenticated read of NOW_ART. */
+    GET_ART(20);
 
     companion object {
         fun fromId(id: Int): Command? = entries.firstOrNull { it.id == id }

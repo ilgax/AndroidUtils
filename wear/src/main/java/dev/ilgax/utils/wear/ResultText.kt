@@ -31,15 +31,18 @@ object ResultText {
             Result.APP_START_FAILED -> R.string.res_app_start_failed
             Result.MACRO_BUSY -> R.string.res_macro_busy
             Result.MACRO_NOT_FOUND -> R.string.res_macro_not_found
+            Result.NOT_AVAILABLE -> R.string.res_not_available
             Result.SPEAKER_ON -> R.string.res_speaker_on
             Result.SPEAKER_OFF -> R.string.res_speaker_off
             Result.SPEAKER_ON_NO_SHIZUKU, Result.SPEAKER_OFF_NO_SHIZUKU -> R.string.res_speaker_no_shizuku
-            // A tablet whose Utils predates the SPEAKER command answers UNKNOWN_COMMAND.
-            Result.UNKNOWN_COMMAND -> if (command == Command.SPEAKER) R.string.res_speaker_unsupported else R.string.res_failed
+            // A tablet whose Utils predates SPEAKER or the media commands answers UNKNOWN_COMMAND.
+            Result.UNKNOWN_COMMAND -> if (command in NEEDS_NEWER_UTILS) R.string.res_speaker_unsupported else R.string.res_failed
             Result.FAILED, Result.UNKNOWN, Result.UPDATE_GONE, Result.UPDATE_BUSY, Result.MTU_TOO_SMALL -> R.string.res_failed
         }
         return context.getString(res)
     }
+
+    private val NEEDS_NEWER_UTILS = setOf(Command.SPEAKER, Command.NEXT, Command.PREVIOUS, Command.SEEK)
 
     private fun success(context: Context, command: Command?, label: String?): String = when (command) {
         Command.LOCK -> context.getString(R.string.res_locked)

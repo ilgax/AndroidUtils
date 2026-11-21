@@ -35,11 +35,11 @@ class RemoteTileService : TileService() {
                     .build(),
             )
             .addContent(spacer(4f))
-            .addContent(row(R.string.tile_lock to Command.LOCK, R.string.tile_play to Command.PLAY_PAUSE))
+            .addContent(row(R.string.tile_lock to Command.LOCK, R.string.tile_ring to Command.RING, R.string.tile_close to Command.KILL_APP))
+            .addContent(spacer(4f))
+            .addContent(row(R.string.tile_prev to Command.PREVIOUS, R.string.tile_play to Command.PLAY_PAUSE, R.string.tile_next to Command.NEXT))
             .addContent(spacer(4f))
             .addContent(row(R.string.tile_vol_down to Command.VOLUME_DOWN, R.string.tile_vol_up to Command.VOLUME_UP))
-            .addContent(spacer(4f))
-            .addContent(row(R.string.tile_ring to Command.RING, R.string.tile_close to Command.KILL_APP))
             .addContent(spacer(4f))
             .addContent(button(R.string.tile_speaker, Command.SPEAKER, width = 136f, arg = SpeakerOp.TOGGLE.arg))
             .build()
@@ -55,11 +55,16 @@ class RemoteTileService : TileService() {
     ): ListenableFuture<ResourceBuilders.Resources> =
         done(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
 
-    private fun row(a: Pair<Int, Command>, b: Pair<Int, Command>) = LayoutElementBuilders.Row.Builder()
-        .addContent(button(a.first, a.second))
-        .addContent(LayoutElementBuilders.Spacer.Builder().setWidth(dp(4f)).build())
-        .addContent(button(b.first, b.second))
-        .build()
+    /** Buttons side by side: two of 66 dp, three of 44 dp (the same 136 dp as the wide button below them). */
+    private fun row(vararg buttons: Pair<Int, Command>): LayoutElementBuilders.LayoutElement {
+        val width = if (buttons.size >= 3) 44f else 66f
+        val row = LayoutElementBuilders.Row.Builder()
+        buttons.forEachIndexed { i, (label, command) ->
+            if (i > 0) row.addContent(LayoutElementBuilders.Spacer.Builder().setWidth(dp(4f)).build())
+            row.addContent(button(label, command, width))
+        }
+        return row.build()
+    }
 
     private fun button(label: Int, command: Command, width: Float = 66f, arg: Int? = null): LayoutElementBuilders.LayoutElement {
         val activity = ActionBuilders.AndroidActivity.Builder()

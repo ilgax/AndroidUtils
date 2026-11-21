@@ -29,6 +29,15 @@ object Protocol {
      */
     val UPDATE_DATA_UUID: UUID = UUID.fromString("f6863211-e975-4981-af7b-aab8996e9d34")
 
+    /**
+     * Readable (long read) + notify. Notify: a content-free "now playing changed" ping ([PING_NOW_PLAYING]); read: the
+     * authenticated [NowPlayingFrame] after GET_NOW_PLAYING. Absent on Utils builds that predate media control.
+     */
+    val NOW_PLAYING_UUID: UUID = UUID.fromString("e3352a35-f761-4062-bcd0-3f69082271f6")
+
+    /** Readable (long read): one authenticated page of the cover art ([NowArt]) after GET_ART. Absent together with NOW_PLAYING. */
+    val NOW_ART_UUID: UUID = UUID.fromString("d1217f6a-8a94-47ab-8c00-2444b943a88a")
+
     /** Standard Client Characteristic Configuration descriptor. */
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -42,6 +51,8 @@ object Protocol {
     const val PING_OFFER: Byte = 1
     /** First byte of an OFFER notification: "the macro list changed, sync it". Old watches treat any ping as an offer check. */
     const val PING_MACROS: Byte = 2
+    /** First byte of a NOW_PLAYING notification: "the state changed, read it". */
+    const val PING_NOW_PLAYING: Byte = 1
     const val KEY_SIZE = 32
     const val PAIRING_WINDOW_MS = 2 * 60 * 1000L
 }

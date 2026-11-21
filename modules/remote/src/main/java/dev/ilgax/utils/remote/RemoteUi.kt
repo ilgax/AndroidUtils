@@ -54,6 +54,10 @@ data class RemoteUiState(
     val runningMacro: RunningMacro? = null,
     /** The listener's foreground notification is turned off in system settings. */
     val notificationHidden: Boolean = false,
+    /** Notification-listener access, which media control (the watch's Now playing) needs. */
+    val mediaAccess: Boolean = true,
+    /** Shizuku is ready, so the grant happens by itself. */
+    val shizukuReady: Boolean = false,
 )
 
 /** What the pairing sheet is showing. */
@@ -87,6 +91,7 @@ class RemoteActions(
     val onAddMacro: () -> Unit = {},
     val onEditMacro: (Int) -> Unit = {},
     val onHideNotification: () -> Unit = {},
+    val onGrantMediaAccess: () -> Unit = {},
 )
 
 internal fun statusTextRes(s: Status): Int = when (s) {
@@ -95,6 +100,7 @@ internal fun statusTextRes(s: Status): Int = when (s) {
     Status.NOTHING_TO_CLOSE -> R.string.remote_res_nothing_to_close
     Status.SLOT_EMPTY -> R.string.remote_res_slot_empty
     Status.APP_START_FAILED -> R.string.remote_res_start_failed
+    Status.NOT_AVAILABLE -> R.string.remote_res_not_available
     else -> R.string.remote_res_failed
 }
 

@@ -9,6 +9,8 @@ import android.os.Looper
 import android.view.KeyEvent
 import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.MacroList
+import dev.ilgax.utils.protocol.NowArt
+import dev.ilgax.utils.protocol.Transport
 import dev.ilgax.utils.protocol.SpeakerCodec
 import dev.ilgax.utils.core.action.ActionFacts
 import dev.ilgax.utils.core.action.ActionRegistry
@@ -40,6 +42,12 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
             Command.HELLO -> UpdateCodec.decodeVersion(args)?.let { UpdateHost.get(context).onHello(it); Status.SUCCESS } ?: Status.FAILED
             Command.UPDATE_STATE -> UpdateReport.decode(args)?.let { UpdateHost.get(context).onReport(it); Status.SUCCESS } ?: Status.FAILED
             Command.SPEAKER -> speaker(args)
+            // The grants are handled by the GATT server; only the arguments are checked here.
+            Command.GET_NOW_PLAYING -> Status.SUCCESS
+            Command.GET_ART -> if (NowArt.decodePageArgs(args) != null) Status.SUCCESS else Status.FAILED
+            Command.NEXT -> skip(next = true)
+            Command.PREVIOUS -> skip(next = false)
+            Command.SEEK -> Transport.decodeSeek(args)?.let { NowPlayingMonitor.get(context).seek(it) } ?: Status.FAILED
             Command.LOCK -> lock()
             Command.PLAY_PAUSE -> playPause()
             Command.VOLUME_UP -> volume(AudioManager.ADJUST_RAISE)
@@ -77,10 +85,18 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
         return onMain { if (RemoteA11y.lockScreen()) Status.SUCCESS else Status.FAILED }
     }
 
-    private fun playPause(): Status {
+    private fun playPause(): Status = mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+
+    /** The active media session when there is one, a media key (to whoever holds media focus) otherwise. */
+    private fun skip(next: Boolean): Status {
+        if (NowPlayingMonitor.get(context).skip(next)) return Status.SUCCESS
+        return mediaKey(if (next) KeyEvent.KEYCODE_MEDIA_NEXT else KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+    }
+
+    private fun mediaKey(code: Int): Status {
         val am = context.getSystemService(AudioManager::class.java)
-        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
         return Status.SUCCESS
     }
 

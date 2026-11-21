@@ -33,7 +33,7 @@ import dev.ilgax.utils.protocol.SpeakerOp
 import dev.ilgax.utils.protocol.UpdateReport
 
 class MainActivity : Activity() {
-    private enum class Mode { LIST, PAIR_SEARCH, PAIR_CODE }
+    private enum class Mode { LIST, PAIR_SEARCH, PAIR_CODE, NOW_PLAYING }
 
     private lateinit var client: RemoteClient
     private lateinit var prefs: WatchPrefs
@@ -41,6 +41,8 @@ class MainActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var content: LinearLayout
     private lateinit var statusView: TextView
+    /** Built on first use; hosted here so the link policy and the screen-off handling stay in one place. */
+    private var nowPlaying: NowPlayingScreen? = null
     private val ui = Handler(Looper.getMainLooper())
     private var checkStartedAt = 0L
     /** Consecutive failed offer checks; drives the poll back-off. */
@@ -109,6 +111,7 @@ class MainActivity : Activity() {
         updater.listener = { render(); launchPendingConfirm() }
         registerReceiver(screenState, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON) }, RECEIVER_NOT_EXPORTED)
         if (client.isPaired && hasPermissions()) client.warmUp() // connect while the user is still looking for a button
+        if (mode == Mode.NOW_PLAYING) nowPlaying?.start()
         checkForUpdate()
         syncMacros()
         querySpeaker()
@@ -120,6 +123,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        nowPlaying?.stop()
         ui.removeCallbacks(poll)
         unregisterReceiver(screenState)
         updater.visible = false
@@ -135,9 +139,11 @@ class MainActivity : Activity() {
         override fun onReceive(c: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
                 ui.removeCallbacks(poll)
+                nowPlaying?.pause()
                 client.setForeground(false)
             } else {
                 client.setForeground(true)
+                nowPlaying?.resume()
                 checkForUpdate()
                 schedulePoll()
             }
@@ -170,8 +176,31 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
-        scroll.requestFocus()
+        if (mode == Mode.NOW_PLAYING) nowPlaying?.root?.requestFocus() else scroll.requestFocus()
         launchPendingConfirm()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (mode == Mode.NOW_PLAYING) closeNowPlaying() else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
+    private fun openNowPlaying() = withPermissions {
+        val screen = nowPlaying ?: NowPlayingScreen(this, client).also { nowPlaying = it }
+        mode = Mode.NOW_PLAYING
+        setContentView(screen.root)
+        screen.start()
+    }
+
+    private fun closeNowPlaying() {
+        nowPlaying?.stop()
+        mode = Mode.LIST
+        setContentView(scroll)
+        render()
+        scroll.requestFocus()
     }
 
     override fun onDestroy() {
@@ -235,7 +264,8 @@ class MainActivity : Activity() {
 
     private fun listRows(out: MutableList<Row>) {
         updateRows(out)
-        out += pill(getString(R.string.btn_lock), primary = true) { run(Command.LOCK) }
+        out += pill(getString(R.string.btn_now_playing), primary = true) { openNowPlaying() }
+        out += pill(getString(R.string.btn_lock)) { run(Command.LOCK) }
         out += pill(getString(R.string.btn_play_pause)) { run(Command.PLAY_PAUSE) }
         out += pill(getString(R.string.btn_vol_up)) { run(Command.VOLUME_UP) }
         out += pill(getString(R.string.btn_vol_down)) { run(Command.VOLUME_DOWN) }

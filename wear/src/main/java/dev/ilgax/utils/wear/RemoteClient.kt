@@ -34,6 +34,10 @@ import dev.ilgax.utils.protocol.IntegrityFrame
 import dev.ilgax.utils.protocol.IntegrityReport
 import dev.ilgax.utils.protocol.MacroItem
 import dev.ilgax.utils.protocol.MacroList
+import dev.ilgax.utils.protocol.ArtAssembler
+import dev.ilgax.utils.protocol.NowArt
+import dev.ilgax.utils.protocol.NowPlaying
+import dev.ilgax.utils.protocol.NowPlayingFrame
 import dev.ilgax.utils.protocol.Pairing
 import dev.ilgax.utils.protocol.OfferFrame
 import dev.ilgax.utils.protocol.Protocol
@@ -70,6 +74,16 @@ sealed interface MacroSync {
     /** The tablet's Utils predates macros (no MACROS characteristic, or UNKNOWN_COMMAND). */
     data object Unsupported : MacroSync
     class Failed(val result: Result) : MacroSync
+}
+
+/** What [RemoteClient.syncNowPlaying] reports, in order; [Finished] is always last. */
+sealed interface NowPlayingSync {
+    class State(val state: NowPlaying) : NowPlayingSync
+    class Art(val hash: Int, val jpeg: ByteArray) : NowPlayingSync
+    /** The tablet's Utils predates media control. */
+    data object Unsupported : NowPlayingSync
+    class Failed(val result: Result) : NowPlayingSync
+    data object Finished : NowPlayingSync
 }
 
 interface PairingListener {
@@ -113,6 +127,10 @@ class RemoteClient private constructor(context: Context) {
     /** Optional: absent on tablet apps without the installed-binary check. */
     private var verifyCh: BluetoothGattCharacteristic? = null
     private var notifying = false
+    /** Optional: absent on tablet apps without media control. */
+    private var nowCh: BluetoothGattCharacteristic? = null
+    private var artCh: BluetoothGattCharacteristic? = null
+    private var nowNotifying = false
     /** Optional: absent on tablet apps that cannot send the update over Bluetooth. */
     private var updateDataCh: BluetoothGattCharacteristic? = null
     private var dataNotifying = false
@@ -180,6 +198,9 @@ class RemoteClient private constructor(context: Context) {
 
     /** Called on the main thread after a successful command while the app is not visible (tile, quick launch). */
     @Volatile var onContact: (() -> Unit)? = null
+
+    /** Called on the main thread when the tablet pings that what is playing changed. */
+    @Volatile var onNowPlayingHint: (() -> Unit)? = null
 
     /** Called on the main thread when the tablet pings that its macro list changed. */
     @Volatile var onMacrosHint: (() -> Unit)? = null
@@ -344,6 +365,92 @@ class RemoteClient private constructor(context: Context) {
                         finish(Result.SUCCESS)
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Subscribes to the now-playing pings (once per connection), asks for the state (GET_NOW_PLAYING grants one read bound to
+     * that frame's nonce) and delivers it, then pulls the cover page by page when its hash is not [knownArtHash]. The state is
+     * delivered before the cover; a cover that fails to arrive is not an error. A user's taps jump ahead of this job.
+     */
+    fun syncNowPlaying(knownArtHash: Int, listener: (NowPlayingSync) -> Unit) {
+        enqueue({ r ->
+            if (r != Result.SUCCESS) listener(NowPlayingSync.Failed(r))
+            listener(NowPlayingSync.Finished)
+        }, background = true) {
+            withConnection(pairing = false) { err ->
+                if (err != null) return@withConnection finish(err)
+                val nCh = nowCh
+                val unsupported = {
+                    main.post { listener(NowPlayingSync.Unsupported) }
+                    finish(Result.SUCCESS)
+                }
+                if (nCh == null) return@withConnection unsupported()
+                ensureMtu {
+                    subscribeNow(nCh) {
+                        sendSignedWithNonce(this@RemoteClient::vaultMac, Command.GET_NOW_PLAYING, ByteArray(0)) { r, nonce ->
+                            if (r == Result.UNKNOWN_COMMAND) return@sendSignedWithNonce unsupported()
+                            if (r != Result.SUCCESS || nonce == null) return@sendSignedWithNonce finish(r)
+                            op(OP_TIMEOUT_MS, { read(it, nCh) }) { st, value ->
+                                if (st != 0 || value == null) return@op finish(mapStatus(st))
+                                val parsed = try {
+                                    NowPlayingFrame.verify(this@RemoteClient::vaultMac, nonce, value)
+                                } catch (e: Exception) {
+                                    return@op finish(Result.FAILED)
+                                }
+                                val np = (parsed as? NowPlayingFrame.Result.Valid)?.state
+                                    ?: return@op finish(if (parsed is NowPlayingFrame.Result.AuthFailed) Result.AUTH_FAILED else Result.FAILED)
+                                main.post { listener(NowPlayingSync.State(np)) }
+                                val aCh = artCh
+                                if (np.artHash == 0 || np.artHash == knownArtHash || aCh == null) return@op finish(Result.SUCCESS)
+                                readArtPage(aCh, ArtAssembler(np.artHash)) { jpeg ->
+                                    if (jpeg != null) main.post { listener(NowPlayingSync.Art(np.artHash, jpeg)) }
+                                    finish(Result.SUCCESS)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** One page of the cover per authenticated read (GET_ART, like the macro pages); [done] gets the whole JPEG or null on any problem. */
+    private fun Job.readArtPage(ch: BluetoothGattCharacteristic, assembler: ArtAssembler, done: (ByteArray?) -> Unit) {
+        val page = assembler.pageIndex
+        if (page >= NowArt.MAX_PAGES) return done(null)
+        arm(JOB_TIMEOUT_MS)
+        sendSignedWithNonce(this@RemoteClient::vaultMac, Command.GET_ART, NowArt.encodePageArgs(page)) { r, nonce ->
+            if (r != Result.SUCCESS || nonce == null) return@sendSignedWithNonce done(null)
+            op(OP_TIMEOUT_MS, { read(it, ch) }) { st, value ->
+                if (st != 0 || value == null) return@op done(null)
+                val p = try {
+                    NowArt.verifyPage(this@RemoteClient::vaultMac, nonce, value)
+                } catch (e: Exception) {
+                    null
+                } ?: return@op done(null)
+                when (assembler.accept(p)) {
+                    ArtAssembler.Verdict.MORE -> readArtPage(ch, assembler, done)
+                    ArtAssembler.Verdict.DONE -> done(assembler.result)
+                    ArtAssembler.Verdict.REJECTED -> done(null)
+                }
+            }
+        }
+    }
+
+    /** Leaves the now-playing screen: stops the pings (the tablet then stops watching its media sessions). Quiet when not subscribed. */
+    fun stopNowPlaying() {
+        handler.post {
+            if (!nowNotifying) return@post
+            enqueue({ }, background = true) {
+                val ch = nowCh
+                val cccd = ch?.getDescriptor(Protocol.CCCD_UUID)
+                val g = gatt
+                if (!ready || !nowNotifying || ch == null || cccd == null || g == null) return@enqueue finish(Result.SUCCESS)
+                try { g.setCharacteristicNotification(ch, false) } catch (_: SecurityException) {}
+                nowNotifying = false
+                op(OP_TIMEOUT_MS, { writeDescriptor(it, cccd, enable = false) }) { _, _ -> finish(Result.SUCCESS) }
             }
         }
     }
@@ -765,6 +872,19 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
+    /** As [subscribe], for the now-playing ping characteristic (its own flag). */
+    private fun subscribeNow(ch: BluetoothGattCharacteristic, then: () -> Unit) {
+        val cccd = ch.getDescriptor(Protocol.CCCD_UUID)
+        val g = gatt
+        if (nowNotifying || cccd == null || g == null) return then()
+        val enabled = try { g.setCharacteristicNotification(ch, true) } catch (e: SecurityException) { false }
+        if (!enabled) return then()
+        op(OP_TIMEOUT_MS, { writeDescriptor(it, cccd) }) { st, _ ->
+            if (st == 0) nowNotifying = true
+            then()
+        }
+    }
+
     /** Enables notifications for [ch] once per connection; continues whatever the outcome. */
     private fun subscribe(ch: BluetoothGattCharacteristic, then: () -> Unit) {
         val cccd = ch.getDescriptor(Protocol.CCCD_UUID)
@@ -781,13 +901,14 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    private fun writeDescriptor(g: BluetoothGatt, d: BluetoothGattDescriptor): Boolean = try {
+    private fun writeDescriptor(g: BluetoothGatt, d: BluetoothGattDescriptor, enable: Boolean = true): Boolean = try {
+        val value = if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         if (Build.VERSION.SDK_INT >= 33) {
-            g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+            g.writeDescriptor(d, value) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             run {
-                d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                d.value = value
                 g.writeDescriptor(d)
             }
         }
@@ -983,6 +1104,7 @@ class RemoteClient private constructor(context: Context) {
         connectedTabletId = null
         nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null
         updateDataCh = null
+        nowCh = null; artCh = null; nowNotifying = false
         dataNotifying = false
         linkMtu = DEFAULT_MTU
         windowSink = null
@@ -1032,6 +1154,8 @@ class RemoteClient private constructor(context: Context) {
                 macrosCh = svc?.getCharacteristic(Protocol.MACROS_UUID)
                 verifyCh = svc?.getCharacteristic(Protocol.VERIFY_UUID)
                 updateDataCh = svc?.getCharacteristic(Protocol.UPDATE_DATA_UUID)
+                nowCh = svc?.getCharacteristic(Protocol.NOW_PLAYING_UUID)
+                artCh = svc?.getCharacteristic(Protocol.NOW_ART_UUID)
                 if (nonceCh == null || commandCh == null || pairCh == null || appsCh == null) {
                     return@post connectFinish(Result.CONNECT_FAILED, teardown = true)
                 }
@@ -1087,6 +1211,10 @@ class RemoteClient private constructor(context: Context) {
         }
 
         private fun hint(g: BluetoothGatt, ch: BluetoothGattCharacteristic, first: Byte?) {
+            if (ch.uuid == Protocol.NOW_PLAYING_UUID) {
+                handler.post { if (g === gatt) main.post { onNowPlayingHint?.invoke() } }
+                return
+            }
             if (ch.uuid != Protocol.OFFER_UUID) return
             handler.post {
                 if (g === gatt) main.post { if (first == Protocol.PING_MACROS) onMacrosHint?.invoke() else onUpdateHint?.invoke() }

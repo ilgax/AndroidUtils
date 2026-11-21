@@ -8,8 +8,11 @@
     <string name="tile_vol_down">Vol −</string>
     <string name="tile_vol_up">Vol +</string>
     <string name="tile_ring">Ring</string>
-    <string name="tile_close">Close app</string>
+    <string name="tile_close">Close</string>
+    <string name="tile_prev">Prev</string>
+    <string name="tile_next">Next</string>
 
+    <string name="btn_now_playing">Now playing</string>
     <string name="btn_lock">Lock</string>
     <string name="btn_play_pause">Play/Pause</string>
     <string name="btn_vol_up">Volume +</string>
@@ -105,4 +108,12 @@
     <string name="tile_speaker">Speaker kill</string>
     <string name="macros_title">Macros</string>
     <string name="macros_empty">Add macros in Utils on your tablet</string>
+    <string name="res_not_available">Not available</string>
+    <string name="np_nothing">Nothing playing</string>
+    <string name="np_grant_access">Grant notification access on the tablet</string>
+    <string name="np_update_utils">Update Utils</string>
+    <string name="np_loading">…</string>
+    <string name="np_tap_retry">Tap to retry</string>
+    <string name="np_seek_back">−10 s</string>
+    <string name="np_seek_forward">+30 s</string>
 </resources>

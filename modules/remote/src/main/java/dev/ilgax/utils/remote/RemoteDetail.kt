@@ -107,6 +107,8 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
             runs = runs,
             runningMacro = running,
             notificationHidden = RemoteService.isNotificationHidden(context),
+            mediaAccess = NotificationAccess.isGranted(context),
+            shizukuReady = shizuku == ShizukuStatus.Ready,
         )
     }
 
@@ -162,6 +164,19 @@ internal fun RemoteDetail(contentPadding: PaddingValues, modifier: Modifier) {
             },
             onCancelUpdate = { updates.stop(); tick++ },
             onSetUpdateOverBluetooth = { prefs.updateOverBluetooth = it; tick++ },
+            onGrantMediaAccess = {
+                scope.launch {
+                    // Shizuku first: no settings screen, and it works where "restricted settings" blocks the manual route.
+                    val ok = withContext(Dispatchers.IO) { NotificationAccess.ensure(context) }
+                    if (!ok) {
+                        if (ShizukuState.current(context) == ShizukuStatus.Ready) {
+                            Toast.makeText(context, R.string.remote_media_grant_failed, Toast.LENGTH_SHORT).show()
+                        }
+                        context.startActivitySafe(NotificationAccess.settingsIntent(context))
+                    }
+                    tick++
+                }
+            },
             onHideNotification = {
                 RemoteService.ensureChannel(context)
                 context.startActivitySafe(

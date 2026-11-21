@@ -34,6 +34,17 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- Does nothing with notifications: only holding this grant lets the app list media sessions (watch "Now playing"). -->
+        <service
+            android:name=".NowPlayingListener"
+            android:exported="true"
+            android:label="@string/remote_np_listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".RemoteBootReceiver"
             android:exported="true">

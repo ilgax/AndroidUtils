@@ -19,6 +19,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import dev.ilgax.utils.core.shizuku.ShizukuState
+import dev.ilgax.utils.core.shizuku.ShizukuStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 class RemoteService : Service() {
     private val main = Handler(Looper.getMainLooper())
@@ -31,6 +39,7 @@ class RemoteService : Service() {
     private var receiverRegistered = false
 
     private val stateListener: () -> Unit = { notifyForeground() }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val btReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -52,6 +61,10 @@ class RemoteService : Service() {
         pairing = PairingSession { main.post { refreshAdvertising() } }
         gatt = GattController(this, prefs, KeyVault(), executor, pairing) { main.post { refreshAdvertising() } }
         RemoteState.addListener(stateListener)
+        // Media control for the watch needs a notification-listener grant; with Shizuku ready it is given here, now or whenever Shizuku comes up.
+        scope.launch {
+            ShizukuState.status.collect { if (it == ShizukuStatus.Ready) NotificationAccess.ensure(this@RemoteService) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -136,6 +149,7 @@ class RemoteService : Service() {
 
     override fun onDestroy() {
         instance = null
+        scope.cancel()
         RemoteState.removeListener(stateListener)
         pairing.cancel()
         if (receiverRegistered) unregisterReceiver(btReceiver)

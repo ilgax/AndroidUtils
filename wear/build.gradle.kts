@@ -11,8 +11,8 @@ android {
         applicationId = "dev.ilgax.utils.wear"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.5.1"
+        versionCode = 10
+        versionName = "0.6.0"
     }
 
     // Fixed debug key (the one the first sideloaded build was signed with): Utils bundles this APK as an
