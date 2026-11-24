@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.HostFeatures
 import dev.ilgax.utils.protocol.Protocol
 import dev.ilgax.utils.protocol.SpeakerCodec
 import dev.ilgax.utils.protocol.SpeakerOp
@@ -38,7 +39,10 @@ class CommandActivity : Activity() {
             speakerCommand -> SpeakerCodec.encodeArgs(SpeakerOp.fromArg(arg)!!)
             else -> ByteArray(0)
         }
-        val label = if (slotCommand) WatchPrefs.get(this).slotLabels[arg].ifEmpty { null } else null
+        val prefs = WatchPrefs.get(this)
+        // The tile names the host it showed; a layout from before the update has none, then the tile rule decides.
+        val named = intent.getStringExtra(EXTRA_HOST)
+        if (named != null && named !in prefs.hosts.ids) return finish()
 
         val spinner = ProgressBar(this).apply { isIndeterminate = true }
         val text = TextView(this).apply { textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt()) }
@@ -56,12 +60,23 @@ class CommandActivity : Activity() {
             },
         )
 
-        RemoteClient.get(this).send(cmd, args) { result ->
-            if (isDestroyed) return@send
-            spinner.visibility = View.GONE
-            text.text = ResultText.announce(this, result, cmd, label)
-            main.postDelayed({ finish() }, 1000)
+        val client = RemoteClient.get(this)
+        val deliver = { host: String? ->
+            val label = if (slotCommand && host != null) prefs.slotLabels(host).getOrNull(arg)?.ifEmpty { null } else null
+            val entry = host?.let { prefs.hosts.get(it) }
+            if (entry != null && !HostFeatures.available(cmd, entry.isNative)) {
+                finish() // the built-in watch-phone features cover this one
+            } else {
+                client.send(cmd, args, host = host) { result ->
+                    if (!isDestroyed) {
+                        spinner.visibility = View.GONE
+                        text.text = ResultText.announce(this, if (host == null) Result.NOT_FOUND else result, cmd, label)
+                        main.postDelayed({ finish() }, 1000)
+                    }
+                }
+            }
         }
+        if (named != null) deliver(named) else Presence.get(this).burstOnce { if (!isDestroyed) deliver(Presence.get(this).tileState().targetId) }
     }
 
     override fun onDestroy() {
@@ -74,6 +89,7 @@ class CommandActivity : Activity() {
     companion object {
         const val EXTRA_CMD = "cmd"
         const val EXTRA_ARG = "arg"
-        private val ALLOWED = Command.entries.toSet() - setOf(Command.PING, Command.SYNC_APPS, Command.HELLO, Command.GET_OFFER, Command.UPDATE_STATE, Command.RUN_MACRO, Command.SYNC_MACROS, Command.SEEK, Command.GET_NOW_PLAYING, Command.GET_ART)
+        const val EXTRA_HOST = "host"
+        private val ALLOWED = Command.entries.toSet() - setOf(Command.PING, Command.SYNC_APPS, Command.HELLO, Command.GET_OFFER, Command.UPDATE_STATE, Command.RUN_MACRO, Command.SYNC_MACROS, Command.SEEK, Command.GET_NOW_PLAYING, Command.GET_ART, Command.GET_INFO)
     }
 }

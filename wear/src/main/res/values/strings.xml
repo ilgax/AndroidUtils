@@ -2,7 +2,10 @@
 <resources>
     <string name="app_name">Tab Remote</string>
     <string name="tile_label">Tab Remote</string>
-    <string name="tile_title">Tablet</string>
+    <string name="tile_searching">Searching…</string>
+    <string name="tile_no_device">No device in range</string>
+    <string name="tile_not_in_range">%1$s not in range</string>
+    <string name="tile_not_paired">Not paired. Open Tab Remote</string>
     <string name="tile_lock">Lock</string>
     <string name="tile_play">Play</string>
     <string name="tile_vol_down">Vol −</string>
@@ -24,6 +27,28 @@
     <string name="btn_sync">Sync apps</string>
     <string name="btn_pair">Pair</string>
     <string name="btn_repair">Re-pair</string>
+    <string name="btn_allow">Allow Bluetooth</string>
+    <string name="btn_retry">Scan again</string>
+    <string name="btn_devices">Devices</string>
+    <string name="btn_add_device">Add device</string>
+    <string name="btn_back">Back</string>
+    <string name="btn_rename">Rename</string>
+    <string name="btn_save">Save</string>
+    <string name="btn_remove">Remove</string>
+    <string name="btn_remove_confirm">Tap again to remove</string>
+    <string name="no_device_in_range">No device in range</string>
+    <string name="dropdown">%1$s ▾</string>
+    <string name="host_not_in_range">%1$s not in range</string>
+    <string name="picker_title">Choose device</string>
+    <string name="devices_title">Devices</string>
+    <string name="device_not_in_range">%1$s · not in range</string>
+    <string name="device_in_range">In range</string>
+    <string name="not_in_range">Not in range</string>
+    <string name="toggle_own_phone">Watch\'s own phone (hide built-in features)</string>
+    <string name="device_bt_name">Bluetooth name: %1$s · own phone detected: %2$s</string>
+    <string name="rename_title">Rename device</string>
+    <string name="yes">yes</string>
+    <string name="no">no</string>
     <string name="app_version">v%1$s</string>
     <string name="btn_confirm">Confirm</string>
     <string name="btn_cancel">Cancel</string>
@@ -59,8 +84,8 @@
     <string name="notif_confirm_text">Tap to continue. This should be the last time.</string>
     <string name="btn_dismiss">Dismiss</string>
 
-    <string name="unpaired_info">Not paired yet. Open Tab Remote Receiver on the tablet and tap Pair a watch, then tap Pair here.</string>
-    <string name="pair_search_info">Open Tab Remote Receiver on the tablet and tap Pair a watch.</string>
+    <string name="unpaired_info">Not paired yet. Open Utils on the tablet or phone, open Watch remote and tap Pair a watch, then tap Pair here.</string>
+    <string name="pair_search_info">Open Utils on the device, open Watch remote and tap Pair a watch.</string>
     <string name="pair_compare">Confirm only if the tablet shows the same code.</string>
 
     <string name="status_ready">Ready</string>
@@ -79,7 +104,7 @@
     <string name="res_closed">App closed ✓</string>
     <string name="res_opened">Opened %1$s</string>
     <string name="res_switched">Switched to %1$s</string>
-    <string name="res_not_found">Tablet not found</string>
+    <string name="res_not_found">Device not in range</string>
     <string name="res_connect_failed">Couldn\'t connect</string>
     <string name="res_timeout">Timed out</string>
     <string name="res_bluetooth_off">Bluetooth is off</string>

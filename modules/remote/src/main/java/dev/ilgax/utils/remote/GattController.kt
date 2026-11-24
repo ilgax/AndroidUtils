@@ -21,6 +21,7 @@ import dev.ilgax.utils.protocol.NowArt
 import dev.ilgax.utils.protocol.NowPlayingFrame
 import dev.ilgax.utils.remote.macros.MacroEngine
 import dev.ilgax.utils.protocol.IntegrityFrame
+import dev.ilgax.utils.protocol.InfoFrame
 import dev.ilgax.utils.protocol.OfferFrame
 import dev.ilgax.utils.protocol.Protocol
 import dev.ilgax.utils.protocol.SpeakerCodec
@@ -66,6 +67,9 @@ class GattController(
     /** GET_ART grants: one authenticated read of NOW_ART for the page asked, bound to the granting frame's nonce. */
     private val artGrants = HashMap<String, MacroGrant>()
     private val artSnapshots = HashMap<String, ByteArray>()
+    /** GET_INFO grants: one authenticated read of INFO, bound to the granting frame's nonce. */
+    private val infoGrants = HashMap<String, ByteArray>()
+    private val infoSnapshots = HashMap<String, ByteArray>()
     private var nowChar: BluetoothGattCharacteristic? = null
     /** Watches subscribed to NOW_PLAYING pings; the media sessions are only watched while there is one. */
     private val nowSubscribers = HashSet<String>()
@@ -104,6 +108,7 @@ class GattController(
             offerGrants.clear(); offerSnapshots.clear(); offerSubscribers.clear()
             macroGrants.clear(); macroSnapshots.clear()
             nowGrants.clear(); nowSnapshots.clear(); artGrants.clear(); artSnapshots.clear(); nowSubscribers.clear()
+            infoGrants.clear(); infoSnapshots.clear()
             updateNowListening()
             dataSubscribers.clear(); dataWindows.clear(); dataInFlight.clear()
         }
@@ -231,6 +236,9 @@ class GattController(
         svc.addCharacteristic(
             BluetoothGattCharacteristic(Protocol.NOW_ART_UUID, BluetoothGattCharacteristic.PROPERTY_READ, read),
         )
+        svc.addCharacteristic(
+            BluetoothGattCharacteristic(Protocol.INFO_UUID, BluetoothGattCharacteristic.PROPERTY_READ, read),
+        )
         return svc
     }
 
@@ -251,6 +259,7 @@ class GattController(
                     offerGrants.remove(addr); offerSnapshots.remove(addr); offerSubscribers.remove(addr)
                     macroGrants.remove(addr); macroSnapshots.remove(addr)
                     nowGrants.remove(addr); nowSnapshots.remove(addr); artGrants.remove(addr); artSnapshots.remove(addr)
+                    infoGrants.remove(addr); infoSnapshots.remove(addr)
                     if (nowSubscribers.remove(addr)) updateNowListening()
                     dataSubscribers.remove(addr); dataWindows.remove(addr); dataInFlight.remove(addr)
                     UpdateHost.get(context).data.release(addr)
@@ -411,6 +420,15 @@ class GattController(
                 artGrants.remove(addr)?.let { grant ->
                     try {
                         NowArt.encodePage(mac(), grant.nonce, NowPlayingMonitor.get(context).art(), grant.page)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+            Protocol.INFO_UUID -> readGranted(device, requestId, offset, infoSnapshots) {
+                infoGrants.remove(addr)?.let { nonce ->
+                    try {
+                        InfoFrame.encode(mac(), nonce, HostIdentity.read(context))
                     } catch (e: Exception) {
                         null
                     }
@@ -653,6 +671,7 @@ class GattController(
                     MacroList.decodePageArgs(r.args)?.let { macroGrants[addr] = MacroGrant(nonce, it) }
                 }
                 if (r.command == Command.GET_NOW_PLAYING && status == Status.SUCCESS) nowGrants[addr] = nonce
+                if (r.command == Command.GET_INFO && status == Status.SUCCESS) infoGrants[addr] = nonce
                 if (r.command == Command.GET_ART && status == Status.SUCCESS) {
                     NowArt.decodePageArgs(r.args)?.let { artGrants[addr] = MacroGrant(nonce, it) }
                 }

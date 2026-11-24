@@ -38,6 +38,9 @@ object Protocol {
     /** Readable (long read): one authenticated page of the cover art ([NowArt]) after GET_ART. Absent together with NOW_PLAYING. */
     val NOW_ART_UUID: UUID = UUID.fromString("d1217f6a-8a94-47ab-8c00-2444b943a88a")
 
+    /** Readable (long read): the authenticated [InfoFrame] (display name, Bluetooth name, device class) after GET_INFO. Absent on Utils builds that predate it. */
+    val INFO_UUID: UUID = UUID.fromString("a8d3f5c1-6e24-4b7a-9c0e-1f5b8d2a7e63")
+
     /** Standard Client Characteristic Configuration descriptor. */
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

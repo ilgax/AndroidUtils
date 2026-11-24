@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference
 sealed interface UpdateUi {
     data object Idle : UpdateUi
     /** An authenticated offer is waiting for the user's tap. */
-    class Available(val offer: UpdateOffer) : UpdateUi
+    class Available(val offer: UpdateOffer, val host: String?) : UpdateUi
     data class Downloading(
         val version: Int,
         val percent: Int,
@@ -82,6 +82,8 @@ class WatchUpdater private constructor(context: Context) {
     /** True between MainActivity's onStart and onStop. */
     @Volatile var visible = false
     @Volatile private var pendingConfirm: Intent? = null
+    /** The host whose offer is being installed: its link carries the download, the progress reports and the checks. Null = the selected one. */
+    @Volatile private var updateHost: String? = null
     private var lastReportedPercent = -1
 
     // Guarded by this.
@@ -95,7 +97,7 @@ class WatchUpdater private constructor(context: Context) {
 
     init {
         // Any successful command while the app is closed (tile, quick launch) is a chance to notice an offer.
-        RemoteClient.get(this.context).onContact = { backgroundCheck() }
+        RemoteClient.get(this.context).onContact = { host -> backgroundCheck(host) }
     }
 
     val isBusy: Boolean get() = synchronized(this) { UpdateFlow.isBusy(flow, flowSince, SystemClock.elapsedRealtime()) }
@@ -109,7 +111,7 @@ class WatchUpdater private constructor(context: Context) {
     fun requestStart() = synchronized(this) { userRequestedAt = SystemClock.elapsedRealtime() }
 
     /** An authenticated offer was read from the tablet. */
-    fun onOffer(offer: UpdateOffer) {
+    fun onOffer(offer: UpdateOffer, host: String?) {
         val installed = versionCode(context)
         val action = synchronized(this) {
             OfferPolicy.decide(
@@ -122,11 +124,11 @@ class WatchUpdater private constructor(context: Context) {
             )
         }
         when (action) {
-            OfferPolicy.Action.START -> start(offer)
-            OfferPolicy.Action.SHOW -> show(offer)
+            OfferPolicy.Action.START -> start(offer, host)
+            OfferPolicy.Action.SHOW -> show(offer, host)
             OfferPolicy.Action.NOTIFY -> {
                 val first = synchronized(this) { (offer.key() != lastNotifiedKey).also { lastNotifiedKey = offer.key() } }
-                show(offer)
+                show(offer, host)
                 if (first) UpdateNotifier.ready(context)
             }
             else -> Unit
@@ -141,14 +143,15 @@ class WatchUpdater private constructor(context: Context) {
         }
     }
 
-    private fun show(offer: UpdateOffer) {
+    private fun show(offer: UpdateOffer, host: String?) {
         transition(UpdateFlow.Event.OFFER)
-        set(UpdateUi.Available(offer))
+        set(UpdateUi.Available(offer, host))
     }
 
-    fun start(offer: UpdateOffer) {
+    fun start(offer: UpdateOffer, host: String?) {
         synchronized(this) {
             if (UpdateFlow.isBusy(flow, flowSince, SystemClock.elapsedRealtime())) return
+            updateHost = host
             flow = UpdateFlow.next(flow, UpdateFlow.Event.START)
             flowSince = SystemClock.elapsedRealtime()
             lastTriedKey = offer.key()
@@ -273,6 +276,7 @@ class WatchUpdater private constructor(context: Context) {
                                 RemoteClient.FrameAction.ABORT // the file was closed under a window that timed out
                             }
                         },
+                        host = updateHost,
                     ) { r -> result.set(r); latch.countDown() }
                     if (!latch.await(WINDOW_WAIT_MS, TimeUnit.MILLISECONDS)) {
                         cancelled.set(true)
@@ -346,7 +350,7 @@ class WatchUpdater private constructor(context: Context) {
     private fun freshOffer(old: UpdateOffer): UpdateOffer? {
         val found = AtomicReference<UpdateOffer?>()
         val latch = CountDownLatch(1)
-        RemoteClient.get(context).checkForUpdate(versionCode(context)) { check ->
+        RemoteClient.get(context).checkForUpdate(versionCode(context), updateHost) { check ->
             if (check is UpdateCheck.Offer && check.offer.versionCode == old.versionCode) found.set(check.offer)
             latch.countDown()
         }
@@ -388,7 +392,7 @@ class WatchUpdater private constructor(context: Context) {
         set(UpdateUi.Installing(version))
         // The new APK replaces this process, so give the INSTALLING report a moment to reach the tablet first.
         val sent = CountDownLatch(1)
-        RemoteClient.get(context).send(Command.UPDATE_STATE, UpdateReport(UpdateReport.Phase.INSTALLING, 0).encode()) { sent.countDown() }
+        RemoteClient.get(context).send(Command.UPDATE_STATE, UpdateReport(UpdateReport.Phase.INSTALLING, 0).encode(), host = updateHost) { sent.countDown() }
         sent.await(SEND_WAIT_MS, TimeUnit.MILLISECONDS)
 
         val installer = context.packageManager.packageInstaller
@@ -477,7 +481,7 @@ class WatchUpdater private constructor(context: Context) {
     // region background and verification
 
     /** After a successful command while the app is closed: read the offer, and answer a verification request. */
-    private fun backgroundCheck() {
+    private fun backgroundCheck(host: String) {
         val client = RemoteClient.get(context)
         val now = SystemClock.elapsedRealtime()
         val go = synchronized(this) {
@@ -487,21 +491,21 @@ class WatchUpdater private constructor(context: Context) {
             ok
         }
         if (!go) return
-        client.checkForUpdate(versionCode(context)) { check -> handleCheck(check) }
+        client.checkForUpdate(versionCode(context), host) { check -> handleCheck(check, host) }
     }
 
     /** Shared by the visible app and the background check. */
-    fun handleCheck(check: UpdateCheck) {
+    fun handleCheck(check: UpdateCheck, host: String?) {
         when (check) {
-            is UpdateCheck.Offer -> onOffer(check.offer)
+            is UpdateCheck.Offer -> onOffer(check.offer, host)
             is UpdateCheck.None -> onNoOffer()
             else -> Unit
         }
-        if (check.verifyRequested) verifyAndReport()
+        if (check.verifyRequested) verifyAndReport(host)
     }
 
     /** Hashes the installed APK(s) and the signing certificate off the main thread and sends them to the tablet. */
-    fun verifyAndReport(done: (VerifyOutcome) -> Unit = {}) {
+    fun verifyAndReport(host: String?, done: (VerifyOutcome) -> Unit = {}) {
         if (!verifying.compareAndSet(false, true)) return
         Thread({
             val report = InstalledBinary.report(context)
@@ -510,10 +514,10 @@ class WatchUpdater private constructor(context: Context) {
                 main.post { done(VerifyOutcome.UNREADABLE) }
                 return@Thread
             }
-            RemoteClient.get(context).reportIntegrity(report) { r ->
+            RemoteClient.get(context).reportIntegrity(report, host) { r ->
                 verifying.set(false)
                 val outcome = when (r) {
-                    Result.SUCCESS -> VerifyOutcome.SENT.also { prefs.verifiedVersion = report.versionCode }
+                    Result.SUCCESS -> VerifyOutcome.SENT.also { if (host != null) prefs.setVerifiedVersion(host, report.versionCode) }
                     Result.UNKNOWN_COMMAND -> VerifyOutcome.TABLET_TOO_OLD
                     else -> VerifyOutcome.NOT_SENT
                 }
@@ -523,8 +527,8 @@ class WatchUpdater private constructor(context: Context) {
     }
 
     /** First start after an update (or install): tell the tablet what is actually running. */
-    fun verifyIfNewVersion() {
-        if (prefs.verifiedVersion != versionCode(context)) verifyAndReport()
+    fun verifyIfNewVersion(host: String) {
+        if (prefs.verifiedVersion(host) != versionCode(context)) verifyAndReport(host)
     }
 
     enum class VerifyOutcome { SENT, NOT_SENT, TABLET_TOO_OLD, UNREADABLE }
@@ -546,7 +550,7 @@ class WatchUpdater private constructor(context: Context) {
 
     // endregion
 
-    private fun report(r: UpdateReport) = RemoteClient.get(context).reportUpdate(r)
+    private fun report(r: UpdateReport) = RemoteClient.get(context).reportUpdate(r, updateHost)
 
     private fun set(s: UpdateUi) {
         state = s

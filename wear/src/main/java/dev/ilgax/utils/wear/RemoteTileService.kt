@@ -15,40 +15,76 @@ import androidx.concurrent.futures.ResolvableFuture
 import androidx.wear.tiles.EventBuilders
 import com.google.common.util.concurrent.ListenableFuture
 import dev.ilgax.utils.protocol.Command
+import dev.ilgax.utils.protocol.HostFeatures
+import dev.ilgax.utils.protocol.TargetState
 import dev.ilgax.utils.protocol.SpeakerOp
 
 class RemoteTileService : TileService() {
-    /** The tile came into view: open the connection now so the tap that follows only has to send. */
+    /**
+     * The tile came into view: listen for the paired hosts for a moment (a 1.5 s burst, skipped while the last result is a few seconds
+     * old), then redraw with who was heard and open the link to the target so the tap that follows only has to send. Nothing runs
+     * while the tile is out of view.
+     */
     override fun onTileEnterEvent(requestParams: EventBuilders.TileEnterEvent) {
         super.onTileEnterEvent(requestParams)
         val client = RemoteClient.get(this)
-        if (client.isPaired && Permissions.bluetoothGranted(this)) client.warmUp()
+        val presence = Presence.get(this)
+        if (client.isPaired && Permissions.bluetoothGranted(this)) {
+            presence.burstOnce {
+                getUpdater(this).requestUpdate(RemoteTileService::class.java)
+                presence.tileState().targetId?.let { client.warmUp(it) }
+            }
+        }
     }
 
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val layout = LayoutElementBuilders.Column.Builder()
+        val prefs = WatchPrefs.get(this)
+        val presence = Presence.get(this)
+        val column = LayoutElementBuilders.Column.Builder()
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
-            .addContent(
-                LayoutElementBuilders.Text.Builder()
-                    .setText(getString(R.string.tile_title))
-                    .setFontStyle(font(13f, 0xFFB0BEC5.toInt()))
-                    .build(),
-            )
-            .addContent(spacer(4f))
-            .addContent(row(R.string.tile_lock to Command.LOCK, R.string.tile_ring to Command.RING, R.string.tile_close to Command.KILL_APP))
-            .addContent(spacer(4f))
-            .addContent(row(R.string.tile_prev to Command.PREVIOUS, R.string.tile_play to Command.PLAY_PAUSE, R.string.tile_next to Command.NEXT))
-            .addContent(spacer(4f))
-            .addContent(row(R.string.tile_vol_down to Command.VOLUME_DOWN, R.string.tile_vol_up to Command.VOLUME_UP))
-            .addContent(spacer(4f))
-            .addContent(button(R.string.tile_speaker, Command.SPEAKER, width = 136f, arg = SpeakerOp.TOGGLE.arg))
-            .build()
+        val state = if (prefs.hosts.isEmpty) null else presence.tileState()
+        when {
+            state == null -> column.addContent(label(getString(R.string.tile_not_paired)))
+            state is TargetState.NoneInRange ->
+                column.addContent(label(getString(if (presence.searching) R.string.tile_searching else R.string.tile_no_device)))
+            state is TargetState.NotInRange ->
+                column.addContent(label(getString(R.string.tile_not_in_range, prefs.hosts.get(state.id)?.name ?: "")))
+            state.targetId != null -> {
+                val id = state.targetId!!
+                val entry = prefs.hosts.get(id)
+                // The built-in watch-phone controls cover media, volume and Find My Phone for the watch's own phone.
+                val native = entry?.isNative == true
+                column.addContent(label(entry?.name ?: ""))
+                    .addContent(spacer(4f))
+                    .addContent(
+                        row(
+                            id,
+                            listOf(R.string.tile_lock to Command.LOCK, R.string.tile_ring to Command.RING, R.string.tile_close to Command.KILL_APP)
+                                .filter { HostFeatures.available(it.second, native) },
+                        ),
+                    )
+                if (!native) {
+                    column.addContent(spacer(4f))
+                        .addContent(row(id, listOf(R.string.tile_prev to Command.PREVIOUS, R.string.tile_play to Command.PLAY_PAUSE, R.string.tile_next to Command.NEXT)))
+                        .addContent(spacer(4f))
+                        .addContent(row(id, listOf(R.string.tile_vol_down to Command.VOLUME_DOWN, R.string.tile_vol_up to Command.VOLUME_UP)))
+                }
+                column.addContent(spacer(4f))
+                    .addContent(button(id, R.string.tile_speaker, Command.SPEAKER, width = 136f, arg = SpeakerOp.TOGGLE.arg))
+            }
+        }
         val tile = TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
-            .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
+            .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(column.build()))
             .build()
         return done(tile)
     }
+
+    private fun label(text: String) = LayoutElementBuilders.Text.Builder()
+        .setText(text)
+        .setMaxLines(2)
+        .setFontStyle(font(13f, 0xFFB0BEC5.toInt()))
+        .build()
 
     override fun onTileResourcesRequest(
         requestParams: RequestBuilders.ResourcesRequest,
@@ -56,21 +92,22 @@ class RemoteTileService : TileService() {
         done(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
 
     /** Buttons side by side: two of 66 dp, three of 44 dp (the same 136 dp as the wide button below them). */
-    private fun row(vararg buttons: Pair<Int, Command>): LayoutElementBuilders.LayoutElement {
+    private fun row(host: String, buttons: List<Pair<Int, Command>>): LayoutElementBuilders.LayoutElement {
         val width = if (buttons.size >= 3) 44f else 66f
         val row = LayoutElementBuilders.Row.Builder()
         buttons.forEachIndexed { i, (label, command) ->
             if (i > 0) row.addContent(LayoutElementBuilders.Spacer.Builder().setWidth(dp(4f)).build())
-            row.addContent(button(label, command, width))
+            row.addContent(button(host, label, command, width))
         }
         return row.build()
     }
 
-    private fun button(label: Int, command: Command, width: Float = 66f, arg: Int? = null): LayoutElementBuilders.LayoutElement {
+    private fun button(host: String, label: Int, command: Command, width: Float = 66f, arg: Int? = null): LayoutElementBuilders.LayoutElement {
         val activity = ActionBuilders.AndroidActivity.Builder()
             .setPackageName(packageName)
             .setClassName(CommandActivity::class.java.name)
             .addKeyToExtraMapping(CommandActivity.EXTRA_CMD, ActionBuilders.intExtra(command.id))
+            .addKeyToExtraMapping(CommandActivity.EXTRA_HOST, ActionBuilders.stringExtra(host)) // the host the tile names gets the command
         if (arg != null) activity.addKeyToExtraMapping(CommandActivity.EXTRA_ARG, ActionBuilders.intExtra(arg))
         val launch = ActionBuilders.LaunchAction.Builder().setAndroidActivity(activity.build()).build()
         val modifiers = ModifiersBuilders.Modifiers.Builder()
@@ -110,6 +147,6 @@ class RemoteTileService : TileService() {
     private fun <T> done(value: T): ListenableFuture<T> = ResolvableFuture.create<T>().also { it.set(value) }
 
     private companion object {
-        const val RESOURCES_VERSION = "2"
+        const val RESOURCES_VERSION = "3"
     }
 }

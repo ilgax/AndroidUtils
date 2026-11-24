@@ -66,4 +66,18 @@ object ScanPolicy {
     /** Final check of a scan result (the hardware filter may be absent or coarser on some controllers). */
     fun accepts(adv: Advertisement, pairing: Boolean, wantedTabletId: ByteArray?): Boolean =
         if (pairing) adv.pairing else wantedTabletId != null && adv.tabletId.contentEquals(wantedTabletId)
+
+    /** Most paired hosts that get a hardware filter each; more fall back to one filter on the service and a software check. */
+    const val MAX_FILTERS = 6
+
+    /** One filter per paired host (a host is listed by its 4-byte id), or a single match-all-hosts filter past [MAX_FILTERS]. */
+    fun filters(ids: List<ByteArray>): List<Filter> =
+        if (ids.isEmpty() || ids.size > MAX_FILTERS) listOf(Filter(ByteArray(Advertisement.SIZE), ByteArray(Advertisement.SIZE)))
+        else ids.map { filter(it, pairing = false) }
+
+    /** The paired host (lowercase hex) a beacon belongs to, or null. */
+    fun match(adv: Advertisement, ids: Collection<String>): String? {
+        val hex = adv.tabletId.joinToString("") { "%02x".format(it) }
+        return hex.takeIf { it in ids }
+    }
 }

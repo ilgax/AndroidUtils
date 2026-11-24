@@ -29,6 +29,10 @@ import dev.ilgax.utils.protocol.AppSlots
 import dev.ilgax.utils.protocol.Command
 import dev.ilgax.utils.protocol.CommandFrame
 import dev.ilgax.utils.protocol.Hmac
+import dev.ilgax.utils.protocol.HostBook
+import dev.ilgax.utils.protocol.InfoFrame
+import dev.ilgax.utils.protocol.NativePhone
+import dev.ilgax.utils.protocol.UpdateSources
 import dev.ilgax.utils.protocol.LinkPolicy
 import dev.ilgax.utils.protocol.IntegrityFrame
 import dev.ilgax.utils.protocol.IntegrityReport
@@ -103,7 +107,8 @@ interface PairingListener {
 class RemoteClient private constructor(context: Context) {
     private val context = context.applicationContext
     private val prefs = WatchPrefs.get(this.context)
-    private val vault = KeyVault()
+    private val presence = Presence.get(this.context)
+    private val vaults = HashMap<String, KeyVault>()
     private val thread = HandlerThread("tabremote-client").apply { start() }
     private val handler = Handler(thread.looper)
     private val main = Handler(Looper.getMainLooper())
@@ -115,7 +120,8 @@ class RemoteClient private constructor(context: Context) {
     private var gatt: BluetoothGatt? = null
     private var ready = false
     private var mtuRequested = false
-    private var connectedTabletId: ByteArray? = null
+    /** Hex id of the host the live (or connecting) link belongs to; null = no link. One host at a time. */
+    private var connectedHost: String? = null
     private var nonceCh: BluetoothGattCharacteristic? = null
     private var commandCh: BluetoothGattCharacteristic? = null
     private var pairCh: BluetoothGattCharacteristic? = null
@@ -126,6 +132,8 @@ class RemoteClient private constructor(context: Context) {
     private var macrosCh: BluetoothGattCharacteristic? = null
     /** Optional: absent on tablet apps without the installed-binary check. */
     private var verifyCh: BluetoothGattCharacteristic? = null
+    /** Optional: absent on hosts that predate the name / device class info. */
+    private var infoCh: BluetoothGattCharacteristic? = null
     private var notifying = false
     /** Optional: absent on tablet apps without media control. */
     private var nowCh: BluetoothGattCharacteristic? = null
@@ -146,10 +154,6 @@ class RemoteClient private constructor(context: Context) {
     /** True while a connection with notifications enabled is up: the tablet's pings reach us, so polling can be rare. */
     @Volatile var isLinked = false
         private set
-    /** Whether the Keystore holds the key; asked once (a binder call), then remembered. */
-    @Volatile private var keyPresent: Boolean? = null
-    /** The tablet as last seen in a scan: lets the next connect skip scanning while its address is still valid. */
-    private var lastSeen: Seen? = null
 
     private var pendingOp: ((Int, ByteArray?) -> Unit)? = null
     private var connectDone: ((Result?) -> Unit)? = null
@@ -163,7 +167,6 @@ class RemoteClient private constructor(context: Context) {
         val device: BluetoothDevice, val tabletId: ByteArray, val pairing: Boolean,
         val timeoutMs: Long = CONNECT_TIMEOUT_MS, var retried: Boolean = false,
     )
-    private class Seen(val device: BluetoothDevice, val tabletId: ByteArray, val at: Long)
     private class AwaitingConfirm(val key: ByteArray, val tabletId: ByteArray, val listener: PairingListener)
 
     private val opTimeout = Runnable { completeOp(STATUS_TIMEOUT, null) }
@@ -177,7 +180,7 @@ class RemoteClient private constructor(context: Context) {
         override fun onReceive(c: Context, intent: Intent) {
             val st = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
             if (st == BluetoothAdapter.STATE_TURNING_OFF || st == BluetoothAdapter.STATE_OFF) {
-                lastSeen = null
+                presence.reset()
                 val job = current
                 if (job != null) job.fail(Result.BLUETOOTH_OFF, teardown = true) else teardown()
             }
@@ -190,14 +193,14 @@ class RemoteClient private constructor(context: Context) {
             bluetoothState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), null, handler, Context.RECEIVER_NOT_EXPORTED,
         )
         // Keystore and preferences are read here, off the main thread, so isPaired is cheap when the UI asks.
-        handler.post { keyPresent(); prefs.tabletId }
+        handler.post { prefs.hosts }
     }
 
     /** Called on the main thread when the tablet pings that an update offer is available. */
     @Volatile var onUpdateHint: (() -> Unit)? = null
 
     /** Called on the main thread after a successful command while the app is not visible (tile, quick launch). */
-    @Volatile var onContact: (() -> Unit)? = null
+    @Volatile var onContact: ((String) -> Unit)? = null
 
     /** Called on the main thread when the tablet pings that what is playing changed. */
     @Volatile var onNowPlayingHint: (() -> Unit)? = null
@@ -207,35 +210,41 @@ class RemoteClient private constructor(context: Context) {
 
     // region public API
 
-    val isPaired: Boolean get() = prefs.tabletId != null && keyPresent()
+    /** Called on the main thread when a host's entry changed in the background (its name or class arrived). */
+    @Volatile var onHostsChanged: (() -> Unit)? = null
 
-    private fun keyPresent(): Boolean = keyPresent ?: vault.has().also { keyPresent = it }
+    val isPaired: Boolean get() = !prefs.hosts.isEmpty
+
+    private fun vaultFor(alias: String): KeyVault = synchronized(vaults) { vaults.getOrPut(alias) { KeyVault(alias) } }
 
     /**
      * Sends one command. A [background] send (housekeeping such as a state query) waits behind the user's taps, which
      * jump ahead of every queued background job.
      */
-    fun send(command: Command, args: ByteArray = ByteArray(0), background: Boolean = false, callback: (Result) -> Unit) {
+    fun send(command: Command, args: ByteArray = ByteArray(0), background: Boolean = false, host: String? = null, callback: (Result) -> Unit) {
+        val target = host ?: presence.targetId()
         enqueue({ r ->
             callback(r)
             // Any successful exchange while the app is closed is the moment to look for an update offer.
-            if (r == Result.SUCCESS && !foreground && command != Command.UPDATE_STATE && command != Command.HELLO) {
-                onContact?.invoke()
+            if (r == Result.SUCCESS && !foreground && target != null && command != Command.UPDATE_STATE && command != Command.HELLO) {
+                onContact?.invoke(target)
             }
-        }, background) { signedCommand(command, args) { finish(it) } }
+        }, background, target) { signedCommand(command, args) { finish(it) } }
     }
 
     /** Opens the connection ahead of the first command (activity opened, tile in view). No-op while busy or connected. */
-    fun warmUp() {
+    fun warmUp(host: String? = null) {
+        val target = host ?: presence.targetId() ?: return
         handler.post {
-            if (current != null || queue.isNotEmpty() || (ready && gatt != null)) return@post
-            enqueue({ }, background = true) { withConnection(pairing = false) { err -> finish(err ?: Result.SUCCESS) } }
+            if (current != null || queue.isNotEmpty() || (ready && gatt != null && connectedHost == target)) return@post
+            enqueue({ }, background = true, host = target) { withConnection(pairing = false) { err -> finish(err ?: Result.SUCCESS) } }
         }
     }
 
     /** Sends SYNC_APPS, then reads the slot labels and stores them. */
-    fun syncApps(callback: (Result) -> Unit) {
-        enqueue(callback) {
+    fun syncApps(host: String? = null, callback: (Result) -> Unit) {
+        val target = host ?: presence.targetId()
+        enqueue(callback, host = target) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 ensureMtu {
@@ -244,7 +253,7 @@ class RemoteClient private constructor(context: Context) {
                         val ch = appsCh ?: return@sendSigned finish(Result.CONNECT_FAILED)
                         op(OP_TIMEOUT_MS, { read(it, ch) }) { st, value ->
                             if (st != 0 || value == null) return@op finish(mapStatus(st))
-                            prefs.slotLabels = AppSlots.decode(value)
+                            prefs.setSlotLabels(target ?: return@op finish(Result.FAILED), AppSlots.decode(value))
                             finish(Result.SUCCESS)
                         }
                     }
@@ -257,9 +266,9 @@ class RemoteClient private constructor(context: Context) {
      * Reports [versionCode] with HELLO, subscribes to offer pings, then asks for the current offer (GET_OFFER) and
      * reads it. The offer is only trusted if its HMAC verifies against the nonce of the GET_OFFER frame.
      */
-    fun checkForUpdate(versionCode: Int, callback: (UpdateCheck) -> Unit) {
+    fun checkForUpdate(versionCode: Int, host: String? = null, callback: (UpdateCheck) -> Unit) {
         var outcome: UpdateCheck? = null
-        enqueue({ r -> callback(outcome ?: UpdateCheck.Failed(r)) }, background = true) {
+        enqueue({ r -> callback(outcome ?: UpdateCheck.Failed(r)) }, background = true, host = host ?: presence.targetId()) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val oCh = offerCh
@@ -311,9 +320,9 @@ class RemoteClient private constructor(context: Context) {
      * Reads the macro list page by page (SYNC_MACROS grants one authenticated read per page, bound to that frame's nonce).
      * Stops after page 0 when its version equals [knownVersion]. Also subscribes to the ping channel when it exists.
      */
-    fun syncMacros(knownVersion: Int?, callback: (MacroSync) -> Unit) {
+    fun syncMacros(knownVersion: Int?, host: String? = null, callback: (MacroSync) -> Unit) {
         var outcome: MacroSync? = null
-        enqueue({ r -> callback(outcome ?: MacroSync.Failed(r)) }, background = true) {
+        enqueue({ r -> callback(outcome ?: MacroSync.Failed(r)) }, background = true, host = host ?: presence.targetId()) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val mCh = macrosCh
@@ -374,11 +383,11 @@ class RemoteClient private constructor(context: Context) {
      * that frame's nonce) and delivers it, then pulls the cover page by page when its hash is not [knownArtHash]. The state is
      * delivered before the cover; a cover that fails to arrive is not an error. A user's taps jump ahead of this job.
      */
-    fun syncNowPlaying(knownArtHash: Int, listener: (NowPlayingSync) -> Unit) {
+    fun syncNowPlaying(knownArtHash: Int, host: String? = null, listener: (NowPlayingSync) -> Unit) {
         enqueue({ r ->
             if (r != Result.SUCCESS) listener(NowPlayingSync.Failed(r))
             listener(NowPlayingSync.Finished)
-        }, background = true) {
+        }, background = true, host = host ?: presence.targetId()) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val nCh = nowCh
@@ -459,8 +468,8 @@ class RemoteClient private constructor(context: Context) {
      * Sends the installed-binary report to the tablet's VERIFY characteristic, bound to a fresh nonce. UNKNOWN_COMMAND when the
      * tablet's Utils predates the check; the report is best-effort, the caller decides whether to retry later.
      */
-    fun reportIntegrity(report: IntegrityReport, callback: (Result) -> Unit) {
-        enqueue(callback, background = true) {
+    fun reportIntegrity(report: IntegrityReport, host: String? = null, callback: (Result) -> Unit) {
+        enqueue(callback, background = true, host = host ?: presence.targetId()) {
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
                 val vCh = verifyCh
@@ -482,12 +491,12 @@ class RemoteClient private constructor(context: Context) {
     }
 
     /** SPEAKER; the answer is one of the SPEAKER_* results (or an error), see [Result.speakerOn]. A QUERY is housekeeping. */
-    fun speaker(op: SpeakerOp, callback: (Result) -> Unit) =
-        send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), background = op == SpeakerOp.QUERY, callback = callback)
+    fun speaker(op: SpeakerOp, host: String? = null, callback: (Result) -> Unit) =
+        send(Command.SPEAKER, SpeakerCodec.encodeArgs(op), background = op == SpeakerOp.QUERY, host = host, callback = callback)
 
     /** RUN_MACRO: SUCCESS means the tablet accepted and started it; the macro keeps running there. */
 
-    fun runMacro(id: Int, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), callback = callback)
+    fun runMacro(id: Int, host: String? = null, callback: (Result) -> Unit) = send(Command.RUN_MACRO, MacroList.encodeId(id), host = host, callback = callback)
 
     /** Best-effort progress for the tablet's "Watch app" section; failures are ignored. */
     /** What [pullUpdate] asks of the frame callback. */
@@ -525,9 +534,9 @@ class RemoteClient private constructor(context: Context) {
      */
     fun pullUpdate(
         token: ByteArray, offset: Int, window: Int, cancelled: () -> Boolean,
-        onFrame: (ByteArray) -> FrameAction, callback: (Result) -> Unit,
+        onFrame: (ByteArray) -> FrameAction, host: String? = null, callback: (Result) -> Unit,
     ) {
-        enqueue(callback, background = true) {
+        enqueue(callback, background = true, host = host ?: presence.targetId()) {
             if (cancelled()) return@enqueue finish(Result.CANCELLED)
             withConnection(pairing = false) { err ->
                 if (err != null) return@withConnection finish(err)
@@ -584,7 +593,7 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    fun reportUpdate(report: UpdateReport) = send(Command.UPDATE_STATE, report.encode(), background = true) { }
+    fun reportUpdate(report: UpdateReport, host: String? = null) = send(Command.UPDATE_STATE, report.encode(), background = true, host = host) { }
 
     /** While the app is visible the connection is kept open so the tablet can ping about a new offer. */
     fun setForeground(on: Boolean) {
@@ -597,7 +606,7 @@ class RemoteClient private constructor(context: Context) {
 
     fun startPairing(listener: PairingListener) {
         handler.post {
-            val job = Job({ listener.onFinished(it) }, background = false) {
+            val job = Job({ listener.onFinished(it) }, background = false, host = null) {
                 teardown() // pairing always uses a fresh connection
                 withConnection(pairing = true) { err ->
                     if (err != null) return@withConnection finish(err)
@@ -617,18 +626,23 @@ class RemoteClient private constructor(context: Context) {
         job.sendSigned({ Hmac.sha256(a.key, it) }, Command.PING, ByteArray(0)) { r ->
             when (r) {
                 Result.SUCCESS -> {
+                    val id = HostBook.hex(a.tabletId)
                     try {
-                        vault.save(a.key)
-                        prefs.tabletId = a.tabletId
-                        connectedTabletId = a.tabletId
-                        keyPresent = true
+                        // A known host keeps its entry and alias (the old single key lives under the original alias); only the key is replaced.
+                        val alias = prefs.hosts.get(id)?.alias ?: HostBook.aliasFor(id)
+                        vaultFor(alias).save(a.key)
+                        prefs.updateHosts { it.paired(id) }
+                        prefs.selectedHost = id
+                        connectedHost = id
                     } catch (e: Exception) {
                         awaiting = null
                         return@sendSigned job.finish(Result.FAILED)
                     }
                     awaiting = null
+                    presence.filtersChanged()
                     job.finish(Result.SUCCESS)
-                    syncApps { }
+                    syncApps(id) { }
+                    refreshInfo(id, force = true)
                 }
                 Result.PAIRING_REJECTED -> {
                     job.arm(PAIRING_WINDOW_MS)
@@ -653,19 +667,73 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    fun unpair() = handler.post {
-        teardown()
-        lastSeen = null
-        vault.delete()
-        keyPresent = false
-        prefs.clearPairing()
+    /** Forgets one host: its key, its entry, its caches. */
+    fun removeHost(id: String) = handler.post {
+        if (connectedHost == id) teardown()
+        presence.forget(id)
+        prefs.hosts.get(id)?.let { vaultFor(it.alias).delete() }
+        prefs.forgetHost(id)
+        presence.filtersChanged()
+        main.post { onHostsChanged?.invoke() }
+    }
+
+    /**
+     * Asks a host for its display name, Bluetooth name and phone/tablet class (GET_INFO), then decides whether it is the watch's own
+     * phone. A host that predates it is remembered as unknown, and nothing gets hidden. Skipped while the last answer is recent.
+     */
+    fun refreshInfo(host: String, force: Boolean = false) {
+        val entry = prefs.hosts.get(host) ?: return
+        if (!force && !UpdateSources.infoDue(entry.infoAt, System.currentTimeMillis())) return
+        enqueue({ main.post { onHostsChanged?.invoke() } }, background = true, host = host) {
+            withConnection(pairing = false) { err ->
+                if (err != null) return@withConnection finish(err)
+                val iCh = infoCh
+                val unsupported = {
+                    prefs.updateHosts { it.infoUnsupported(host, System.currentTimeMillis()) }
+                    finish(Result.SUCCESS)
+                }
+                if (iCh == null) return@withConnection unsupported()
+                ensureMtu {
+                    sendSignedWithNonce(this@RemoteClient::vaultMac, Command.GET_INFO, ByteArray(0)) { r, nonce ->
+                        if (r == Result.UNKNOWN_COMMAND) return@sendSignedWithNonce unsupported()
+                        if (r != Result.SUCCESS || nonce == null) return@sendSignedWithNonce finish(r)
+                        op(OP_TIMEOUT_MS, { read(it, iCh) }) { st, value ->
+                            if (st != 0 || value == null) return@op finish(mapStatus(st))
+                            val v = try {
+                                InfoFrame.verify(this@RemoteClient::vaultMac, nonce, value)
+                            } catch (e: Exception) {
+                                return@op finish(Result.FAILED)
+                            }
+                            val info = (v as? InfoFrame.Result.Valid)?.info ?: return@op finish(Result.AUTH_FAILED)
+                            val auto = NativePhone.isNative(info.btName, info.deviceClass, presence.bonded(), null)
+                            prefs.updateHosts { it.applyInfo(host, info, auto, System.currentTimeMillis()) }
+                            finish(Result.SUCCESS)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** The bonded phones can change (the watch gets paired to another phone): re-run the detection for every host that told its name. */
+    fun recomputeNative() = handler.post {
+        val bonded = presence.bonded()
+        var changed = false
+        for (e in prefs.hosts.entries) {
+            val auto = NativePhone.isNative(e.btName, e.deviceClass, bonded, null)
+            if (auto != e.nativeAuto) {
+                prefs.updateHosts { it.withNativeAuto(e.id, auto) }
+                changed = true
+            }
+        }
+        if (changed) main.post { onHostsChanged?.invoke() }
     }
 
     // endregion
 
     // region jobs
 
-    private inner class Job(val callback: (Result) -> Unit, val background: Boolean, val body: Job.() -> Unit) {
+    private inner class Job(val callback: (Result) -> Unit, val background: Boolean, val host: String?, val body: Job.() -> Unit) {
         var done = false
         private val watchdog = Runnable { fail(Result.TIMEOUT, teardown = true) }
 
@@ -701,8 +769,9 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    private fun enqueue(callback: (Result) -> Unit, background: Boolean = false, body: Job.() -> Unit): Job {
-        val job = Job(callback, background, body)
+    /** [host] (hex id) is the host the job talks to; null = none (the job fails with NOT_FOUND, e.g. nothing in range). */
+    private fun enqueue(callback: (Result) -> Unit, background: Boolean = false, host: String? = null, body: Job.() -> Unit): Job {
+        val job = Job(callback, background, host, body)
         handler.post {
             addToQueue(job)
             next()
@@ -753,7 +822,11 @@ class RemoteClient private constructor(context: Context) {
         }
     }
 
-    private fun vaultMac(data: ByteArray): ByteArray = vault.mac(data) ?: throw IllegalStateException("no key")
+    /** The key of the host the link belongs to. */
+    private fun vaultMac(data: ByteArray): ByteArray {
+        val entry = connectedHost?.let { prefs.hosts.get(it) } ?: throw IllegalStateException("no key")
+        return vaultFor(entry.alias).mac(data) ?: throw IllegalStateException("no key")
+    }
 
     /** Nonce read, then a signed COMMAND write. [mac] may throw; that maps to FAILED. */
     private fun Job.sendSigned(mac: (ByteArray) -> ByteArray, cmd: Command, args: ByteArray, done: (Result) -> Unit) =
@@ -779,7 +852,7 @@ class RemoteClient private constructor(context: Context) {
 
     private fun Job.exchangeKeys(listener: PairingListener) {
         val pCh = pairCh ?: return finish(Result.CONNECT_FAILED)
-        val tabletId = connectedTabletId ?: return finish(Result.CONNECT_FAILED)
+        val tabletId = connectedHost?.let { HostBook.idBytes(it) } ?: return finish(Result.CONNECT_FAILED)
         val kp: KeyPair = Pairing.generateKeyPair()
         val watchPub = Pairing.encodePublicKey(kp.public)
         op(OP_TIMEOUT_MS, { write(it, pCh, watchPub) }) { st, _ ->
@@ -934,33 +1007,31 @@ class RemoteClient private constructor(context: Context) {
         false
     }
 
-    /** Ensures a ready connection to the paired tablet (or to one in pairing mode). */
+    /** Ensures a ready connection to this job's host (or to any host in pairing mode). One link at a time: another host's link is dropped. */
     private fun Job.withConnection(pairing: Boolean, done: (Result?) -> Unit) {
         checkReady()?.let { return done(it) }
-        val stored = prefs.tabletId
+        val hostId = host
         if (!pairing) {
-            if (stored == null || !vault.has()) return done(Result.NOT_PAIRED)
-            if (ready && gatt != null && connectedTabletId?.contentEquals(stored) == true) {
-                lastSeen?.let { if (it.tabletId.contentEquals(stored)) lastSeen = Seen(it.device, it.tabletId, SystemClock.elapsedRealtime()) }
-                return done(null)
-            }
+            if (hostId == null) return done(Result.NOT_FOUND)
+            val entry = prefs.hosts.get(hostId) ?: return done(Result.NOT_PAIRED)
+            if (!vaultFor(entry.alias).has()) return done(Result.NOT_PAIRED)
+            if (ready && gatt != null && connectedHost == hostId) return done(null)
             teardown()
         }
+        val wanted = if (pairing) null else hostId?.let { HostBook.idBytes(it) }
         val scanThenConnect = {
-            scan(pairing, stored) { err, device, id ->
+            scan(pairing, wanted) { err, device, id ->
                 if (err != null || device == null || id == null) return@scan done(err ?: Result.NOT_FOUND)
-                if (!pairing) lastSeen = Seen(device, id, SystemClock.elapsedRealtime())
+                if (!pairing && hostId != null) presence.note(hostId, device)
                 connect(ConnectTarget(device, id, pairing), done)
             }
         }
-        // The tablet was seen a moment ago: connect straight to it and only scan if that does not work out.
-        val seen = lastSeen
-        if (!pairing && seen != null && seen.tabletId.contentEquals(stored) &&
-            LinkPolicy.cachedDeviceUsable(SystemClock.elapsedRealtime() - seen.at)
-        ) {
-            connect(ConnectTarget(seen.device, seen.tabletId, pairing = false, timeoutMs = DIRECT_CONNECT_TIMEOUT_MS, retried = true)) { err ->
+        // The host was heard a moment ago (the presence scan): connect straight to it and only scan if that does not work out.
+        val seen = if (!pairing && hostId != null) presence.device(hostId) else null
+        if (seen != null && wanted != null) {
+            connect(ConnectTarget(seen, wanted, pairing = false, timeoutMs = DIRECT_CONNECT_TIMEOUT_MS, retried = true)) { err ->
                 if (err == null) return@connect done(null)
-                lastSeen = null
+                presence.forget(hostId!!)
                 if (checkReady() != null) done(checkReady()) else scanThenConnect()
             }
         } else {
@@ -1101,8 +1172,9 @@ class RemoteClient private constructor(context: Context) {
         connectTarget = null
         awaiting = null
         mtuRequested = false
-        connectedTabletId = null
-        nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null
+        connectedHost = null
+        presence.pin(null)
+        nonceCh = null; commandCh = null; pairCh = null; appsCh = null; offerCh = null; macrosCh = null; verifyCh = null; infoCh = null
         updateDataCh = null
         nowCh = null; artCh = null; nowNotifying = false
         dataNotifying = false
@@ -1153,6 +1225,7 @@ class RemoteClient private constructor(context: Context) {
                 offerCh = svc?.getCharacteristic(Protocol.OFFER_UUID)
                 macrosCh = svc?.getCharacteristic(Protocol.MACROS_UUID)
                 verifyCh = svc?.getCharacteristic(Protocol.VERIFY_UUID)
+                infoCh = svc?.getCharacteristic(Protocol.INFO_UUID)
                 updateDataCh = svc?.getCharacteristic(Protocol.UPDATE_DATA_UUID)
                 nowCh = svc?.getCharacteristic(Protocol.NOW_PLAYING_UUID)
                 artCh = svc?.getCharacteristic(Protocol.NOW_ART_UUID)
@@ -1160,7 +1233,8 @@ class RemoteClient private constructor(context: Context) {
                     return@post connectFinish(Result.CONNECT_FAILED, teardown = true)
                 }
                 ready = true
-                connectedTabletId = connectTarget?.tabletId
+                connectedHost = connectTarget?.tabletId?.let { HostBook.hex(it) }
+                presence.pin(connectedHost)
                 connectFinish(null)
             }
         }

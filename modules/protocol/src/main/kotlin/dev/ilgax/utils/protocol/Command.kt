@@ -39,7 +39,9 @@ enum class Command(val id: Int) {
     /** Grants one authenticated read of the NOW_PLAYING characteristic, bound to this frame's nonce. */
     GET_NOW_PLAYING(19),
     /** 2 arg bytes: page index, big-endian ([NowArt.encodePageArgs]). Grants one authenticated read of NOW_ART. */
-    GET_ART(20);
+    GET_ART(20),
+    /** Grants one authenticated read of the INFO characteristic ([InfoFrame]), bound to this frame's nonce. A host that predates it answers [Status.UNKNOWN_COMMAND]. */
+    GET_INFO(21);
 
     companion object {
         fun fromId(id: Int): Command? = entries.firstOrNull { it.id == id }

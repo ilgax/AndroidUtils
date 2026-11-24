@@ -43,7 +43,7 @@ class CommandExecutor(context: Context, private val killer: AppKiller = AppKille
             Command.UPDATE_STATE -> UpdateReport.decode(args)?.let { UpdateHost.get(context).onReport(it); Status.SUCCESS } ?: Status.FAILED
             Command.SPEAKER -> speaker(args)
             // The grants are handled by the GATT server; only the arguments are checked here.
-            Command.GET_NOW_PLAYING -> Status.SUCCESS
+            Command.GET_NOW_PLAYING, Command.GET_INFO -> Status.SUCCESS
             Command.GET_ART -> if (NowArt.decodePageArgs(args) != null) Status.SUCCESS else Status.FAILED
             Command.NEXT -> skip(next = true)
             Command.PREVIOUS -> skip(next = false)
